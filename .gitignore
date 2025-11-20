@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment variables
+.env
+.env.local
+
+# Call history (contains sensitive data)
+calls-history.json
+
+# Temporary files
+temp-recording.wav
+*.wav
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
