@@ -43,8 +43,9 @@ loadCallHistory();
 const callData = new Map();
 
 const app = express();
+// Twilio sends form-urlencoded data, so we need to parse it first
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(bodyParser.json()); // parse JSON from Twilio
+app.use(bodyParser.json()); // Also support JSON for other endpoints
 
 const port = process.env.PORT || 3000;
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -55,38 +56,118 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
  * We respond with TwiML that RECORDS the call.
  */
 app.post("/voice", (req, res) => {
-  const host = req.headers["host"]; // e.g. abcd1234.ngrok-free.dev
+  try {
+    console.log("=== Voice webhook received ===");
+    console.log("Request method:", req.method);
+    console.log("Content-Type:", req.headers["content-type"]);
+    console.log("Body keys:", Object.keys(req.body || {}));
+    console.log("Body:", req.body);
+    
+    // Get host - try multiple sources
+    let host = req.headers["host"];
+    if (!host) {
+      host = req.headers["x-forwarded-host"];
+    }
+    if (!host) {
+      // Try to get from the request URL
+      host = req.get("host");
+    }
+    
+    // Default protocol
+    const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+    
+    // If still no host, we can't construct the URL properly
+    if (!host) {
+      console.error("ERROR: No host header found!");
+      // Return a simple response that doesn't require a callback URL
+      const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>Please configure your webhook URL with a proper host.</Say>
+  <Hangup/>
+</Response>`;
+      res.type("text/xml");
+      return res.status(200).send(twiml);
+    }
+    
+    // Get business phone number from environment variable
+    const businessPhoneNumber = process.env.BUSINESS_PHONE_NUMBER;
+    if (!businessPhoneNumber) {
+      console.error("ERROR: BUSINESS_PHONE_NUMBER environment variable not set!");
+      const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>Please configure your business phone number.</Say>
+  <Hangup/>
+</Response>`;
+      res.type("text/xml");
+      return res.status(200).send(twiml);
+    }
+    
+    // Capture caller number, caller name, and CallSid from the initial call
+    const callerNumber = req.body.From || req.body.Caller || "Unknown";
+    const callerName = req.body.FromName || req.body.CallerName || null;
+    const callSid = req.body.CallSid;
+    
+    console.log(`Caller: ${callerNumber}${callerName ? ` (${callerName})` : ''}, CallSid: ${callSid}`);
+    console.log(`Forwarding to: ${businessPhoneNumber}`);
+    console.log(`Host: ${host}, Protocol: ${protocol}`);
+    
+    // Store caller info for later lookup
+    if (callSid) {
+      callData.set(callSid, { callerNumber, callerName, timestamp: new Date().toISOString() });
+      console.log(`✓ Stored caller info for CallSid ${callSid}`);
+    } else {
+      console.log("⚠ No CallSid in voice webhook");
+    }
+    
+    // Pass CallSid as query parameter so we can retrieve it when recording completes
+    const recordingCompleteUrl = callSid 
+      ? `${protocol}://${host}/recording-complete?CallSid=${encodeURIComponent(callSid)}`
+      : `${protocol}://${host}/recording-complete`;
+    
+    console.log("Recording complete URL:", recordingCompleteUrl);
 
-  // Capture caller number and CallSid from the initial call
-  const callerNumber = req.body.From || req.body.Caller || "Unknown";
-  const callSid = req.body.CallSid;
-  
-  console.log("Voice webhook received. Full body:", JSON.stringify(req.body, null, 2));
-  
-  // Store caller info for later lookup
-  if (callSid) {
-    callData.set(callSid, { callerNumber, timestamp: new Date().toISOString() });
-    console.log(`✓ Stored caller number ${callerNumber} for CallSid ${callSid}`);
-  } else {
-    console.log("⚠ No CallSid in voice webhook");
+    // Use <Dial> to forward the call and record it
+    // record="record-from-answer" starts recording when the business number answers
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial 
+    record="record-from-answer"
+    recordingStatusCallback="${recordingCompleteUrl}"
+    recordingStatusCallbackMethod="POST"
+    action="${protocol}://${host}/dial-complete?CallSid=${encodeURIComponent(callSid || '')}"
+    timeout="30"
+    callerId="${callerNumber}">
+    <Number>${businessPhoneNumber}</Number>
+  </Dial>
+</Response>`;
+
+    console.log("Sending TwiML response with Dial");
+    res.type("text/xml");
+    res.status(200).send(twiml);
+  } catch (error) {
+    console.error("Error in /voice endpoint:", error);
+    console.error("Error stack:", error.stack);
+    // Return a simple TwiML response even on error
+    const errorTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>An error occurred processing your call.</Say>
+  <Hangup/>
+</Response>`;
+    res.type("text/xml");
+    res.status(200).send(errorTwiml);
   }
-  
-  // Pass CallSid as query parameter so we can retrieve it when recording completes
-  const recordingCompleteUrl = callSid 
-    ? `https://${host}/recording-complete?CallSid=${encodeURIComponent(callSid)}`
-    : `https://${host}/recording-complete`;
-  
-  console.log("Using recordingCompleteUrl:", recordingCompleteUrl);
+});
 
-  const twiml = `
-    <Response>
-      <Record action="${recordingCompleteUrl}" maxLength="3600" />
-      <Hangup/>
-    </Response>
-  `;
-
-  res.type("text/xml");
-  res.send(twiml);
+/**
+ * Optional endpoint to handle dial completion status
+ * Logs call forwarding status for monitoring
+ */
+app.post("/dial-complete", (req, res) => {
+  console.log("=== Dial complete webhook received ===");
+  console.log("Dial status:", req.body.DialCallStatus);
+  console.log("Dial call duration:", req.body.DialCallDuration);
+  console.log("CallSid:", req.body.CallSid);
+  res.status(200).send("OK");
 });
 
 /**
@@ -136,14 +217,67 @@ app.post("/recording-complete", async (req, res) => {
     }
   }
   
-  // Fetch caller number - prioritize Twilio API, then memory, then fallback
+  // Helper function to lookup caller name using Twilio Lookup API v2
+  const lookupCallerName = async (phoneNumber) => {
+    if (!phoneNumber || phoneNumber === "Unknown") {
+      return null;
+    }
+    
+    try {
+      // Use Twilio Lookup API v2 to get caller name
+      const lookupUrl = `https://lookups.twilio.com/v2/PhoneNumbers/${encodeURIComponent(phoneNumber)}`;
+      const lookupResponse = await axios.get(lookupUrl, {
+        params: {
+          Fields: 'caller_name' // Request caller name information
+        },
+        auth: {
+          username: process.env.TWILIO_ACCOUNT_SID,
+          password: process.env.TWILIO_AUTH_TOKEN,
+        },
+      });
+      
+      // The caller name is in caller_name.caller_name field
+      const name = lookupResponse.data?.caller_name?.caller_name || null;
+      if (name) {
+        console.log(`✓ Retrieved caller name "${name}" from Lookup API for ${phoneNumber}`);
+      }
+      return name;
+    } catch (lookupErr) {
+      // Lookup API may not have data for all numbers, this is expected
+      if (lookupErr.response?.status === 404) {
+        console.log(`ℹ No caller name found in Lookup API for ${phoneNumber}`);
+      } else {
+        console.warn(`⚠ Error looking up caller name for ${phoneNumber}:`, lookupErr.message);
+        if (lookupErr.response) {
+          console.warn(`  Response status: ${lookupErr.response.status}, data:`, lookupErr.response.data);
+        }
+      }
+      return null;
+    }
+  };
+  
+  // Fetch caller number and caller name - prioritize Twilio API, then memory, then fallback
   let callerNumber = "Unknown";
+  let callerName = null;
   
   if (callSid) {
     // First try memory (fastest)
     if (callData.has(callSid)) {
-      callerNumber = callData.get(callSid).callerNumber;
-      console.log(`✓ Found caller number ${callerNumber} in memory for CallSid ${callSid}`);
+      const storedData = callData.get(callSid);
+      callerNumber = storedData.callerNumber;
+      callerName = storedData.callerName || null;
+      
+      // If we have number but no name, try lookup
+      if (callerNumber !== "Unknown" && !callerName) {
+        console.log(`Step 2.2.1: Looking up caller name for ${callerNumber}`);
+        callerName = await lookupCallerName(callerNumber);
+        // Update stored data with name if found
+        if (callerName) {
+          callData.set(callSid, { ...storedData, callerName });
+        }
+      }
+      
+      console.log(`✓ Found caller number ${callerNumber}${callerName ? `, caller name: ${callerName}` : ''} in memory for CallSid ${callSid}`);
     } else {
       // Fetch from Twilio API
       try {
@@ -157,11 +291,19 @@ app.post("/recording-complete", async (req, res) => {
         });
         
         callerNumber = callResponse.data.from || callResponse.data.caller || "Unknown";
-        console.log(`✓ Retrieved caller number ${callerNumber} from Twilio API`);
+        callerName = callResponse.data.caller_name || null;
+        
+        // If we have number but no name from call API, try lookup
+        if (callerNumber !== "Unknown" && !callerName) {
+          console.log(`Step 2.2.1: Looking up caller name for ${callerNumber}`);
+          callerName = await lookupCallerName(callerNumber);
+        }
+        
+        console.log(`✓ Retrieved caller number ${callerNumber}${callerName ? `, caller name: ${callerName}` : ''} from Twilio API`);
         
         // Store it in memory for next time
         if (callerNumber !== "Unknown") {
-          callData.set(callSid, { callerNumber, timestamp: new Date().toISOString() });
+          callData.set(callSid, { callerNumber, callerName, timestamp: new Date().toISOString() });
         }
       } catch (apiErr) {
         console.error("Error fetching caller number from Twilio API:", apiErr.message);
@@ -170,15 +312,28 @@ app.post("/recording-complete", async (req, res) => {
         }
         // Fallback: try to get from request body directly
         callerNumber = req.body.From || req.body.Caller || "Unknown";
+        callerName = req.body.FromName || req.body.CallerName || null;
+        
+        // If we have number but no name, try lookup
+        if (callerNumber !== "Unknown" && !callerName) {
+          callerName = await lookupCallerName(callerNumber);
+        }
       }
     }
   } else {
     // No CallSid available, try fallback
     callerNumber = req.body.From || req.body.Caller || "Unknown";
-    console.log(`⚠ No CallSid available, using fallback: ${callerNumber}`);
+    callerName = req.body.FromName || req.body.CallerName || null;
+    
+    // If we have number but no name, try lookup
+    if (callerNumber !== "Unknown" && !callerName) {
+      callerName = await lookupCallerName(callerNumber);
+    }
+    
+    console.log(`⚠ No CallSid available, using fallback: ${callerNumber}${callerName ? `, caller name: ${callerName}` : ''}`);
   }
   
-  console.log(`Step 2.5: Final caller number determined: ${callerNumber}`);
+  console.log(`Step 2.5: Final caller number determined: ${callerNumber}${callerName ? `, caller name: ${callerName}` : ''}`);
 
   if (!recordingUrl) {
     console.error("No RecordingUrl received in request");
@@ -260,11 +415,13 @@ Make sure each section starts with its number (2., 3., 4., 5.) on a new line and
     // ✅ Save call report to history
     // Ensure callerNumber is always a string
     const finalCallerNumber = callerNumber || "Unknown";
-    console.log(`Step 8.5: Saving report with caller number: ${finalCallerNumber}`);
+    const finalCallerName = callerName || null;
+    console.log(`Step 8.5: Saving report with caller number: ${finalCallerNumber}${finalCallerName ? `, caller name: ${finalCallerName}` : ''}`);
     
     const callReport = {
       id: Date.now().toString(), // Simple ID based on timestamp
       callerNumber: finalCallerNumber,
+      callerName: finalCallerName,
       transcript: transcription.text,
       analysis: analysisText,
       recordingUrl: recordingUrl, // Store the recording URL for playback
@@ -330,6 +487,418 @@ app.get("/audio/:recordingId", async (req, res) => {
 });
 
 /**
+ * Helper function to generate sidebar menu
+ */
+function generateSidebar(activePage = '') {
+  const dashboardActive = activePage === 'dashboard' ? 'active' : '';
+  const reportsActive = activePage === 'reports' ? 'active' : '';
+  
+  return `
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-logo">📞</div>
+        <div class="sidebar-title">Call Analysis</div>
+      </div>
+      <nav class="sidebar-nav">
+        <a href="/dashboard" class="nav-item ${dashboardActive}">
+          <span class="nav-icon">📊</span>
+          <span class="nav-label">Dashboard</span>
+        </a>
+        <a href="/report" class="nav-item ${reportsActive}">
+          <span class="nav-icon">📋</span>
+          <span class="nav-label">Interactions</span>
+        </a>
+      </nav>
+    </div>
+  `;
+}
+
+/**
+ * Dashboard page
+ */
+app.get("/dashboard", (req, res) => {
+  loadCallHistory();
+  
+  const totalCalls = callHistory.length;
+  const recentCalls = callHistory.slice(0, 5);
+  
+  // Calculate statistics
+  let positiveCount = 0;
+  let negativeCount = 0;
+  let neutralCount = 0;
+  let urgentCount = 0;
+  
+  callHistory.forEach(call => {
+    const parsed = parseAnalysis(call.analysis);
+    const sentiment = parsed.sentiment ? parsed.sentiment.toLowerCase() : '';
+    if (/positive|happy|good|great|excellent|satisfied|pleased/i.test(sentiment)) {
+      positiveCount++;
+    } else if (/negative|sad|bad|poor|angry|frustrated|disappointed|unhappy/i.test(sentiment)) {
+      negativeCount++;
+    } else {
+      neutralCount++;
+    }
+    
+    const hasUrgent = parsed.urgentTopics && 
+      parsed.urgentTopics.toLowerCase().trim() !== 'none' && 
+      parsed.urgentTopics.trim() !== '';
+    if (hasUrgent) urgentCount++;
+  });
+  
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Dashboard - Call Analysis</title>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+        <style>
+          * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+          }
+          
+          body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: #ffffff;
+            color: #37352f;
+            line-height: 1.5;
+            min-height: 100vh;
+            font-size: 14px;
+            display: flex;
+          }
+          
+          .sidebar {
+            width: 240px;
+            background: #ffffff;
+            border-right: 1px solid #e9e9e7;
+            height: 100vh;
+            position: fixed;
+            left: 0;
+            top: 0;
+            display: flex;
+            flex-direction: column;
+            z-index: 1000;
+          }
+          
+          .sidebar-header {
+            padding: 20px 16px;
+            border-bottom: 1px solid #e9e9e7;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+          }
+          
+          .sidebar-logo {
+            width: 32px;
+            height: 32px;
+            background: #37352f;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 18px;
+          }
+          
+          .sidebar-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #37352f;
+          }
+          
+          .sidebar-nav {
+            padding: 8px;
+            flex: 1;
+          }
+          
+          .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #37352f;
+            font-size: 14px;
+            transition: background-color 0.15s ease;
+            margin-bottom: 4px;
+          }
+          
+          .nav-item:hover {
+            background: #f7f6f3;
+          }
+          
+          .nav-item.active {
+            background: #f1f1ef;
+            font-weight: 500;
+          }
+          
+          .nav-icon {
+            font-size: 18px;
+            width: 24px;
+            text-align: center;
+          }
+          
+          .main-content {
+            margin-left: 240px;
+            flex: 1;
+            padding: 32px;
+            max-width: 1400px;
+          }
+          
+          .page-header {
+            margin-bottom: 32px;
+          }
+          
+          .page-title {
+            font-size: 28px;
+            font-weight: 600;
+            color: #37352f;
+            margin-bottom: 8px;
+          }
+          
+          .page-subtitle {
+            color: #787774;
+            font-size: 14px;
+          }
+          
+          .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 32px;
+          }
+          
+          .stat-card {
+            background: #ffffff;
+            border: 1px solid #e9e9e7;
+            border-radius: 6px;
+            padding: 20px;
+          }
+          
+          .stat-label {
+            font-size: 12px;
+            color: #787774;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            margin-bottom: 8px;
+          }
+          
+          .stat-value {
+            font-size: 32px;
+            font-weight: 600;
+            color: #37352f;
+          }
+          
+          .recent-calls {
+            background: #ffffff;
+            border: 1px solid #e9e9e7;
+            border-radius: 6px;
+            padding: 20px;
+          }
+          
+          .section-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #37352f;
+            margin-bottom: 16px;
+          }
+          
+          .call-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+          }
+          
+          .call-item {
+            padding: 12px;
+            border: 1px solid #e9e9e7;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+          
+          .call-item-info {
+            flex: 1;
+          }
+          
+          .call-item-number {
+            font-weight: 500;
+            color: #37352f;
+            margin-bottom: 4px;
+          }
+          
+          .call-item-date {
+            font-size: 12px;
+            color: #787774;
+          }
+          
+          .call-item-link {
+            color: #37352f;
+            text-decoration: none;
+            font-size: 12px;
+            padding: 6px 12px;
+            border: 1px solid #e9e9e7;
+            border-radius: 4px;
+            transition: background-color 0.15s ease;
+          }
+          
+          .call-item-link:hover {
+            background: #f7f6f3;
+          }
+          
+          @media (max-width: 768px) {
+            .sidebar {
+              width: 200px;
+            }
+            
+            .main-content {
+              margin-left: 200px;
+              padding: 20px;
+            }
+          }
+        </style>
+      </head>
+      <body>
+        ${generateSidebar('dashboard')}
+        <div class="main-content">
+          <div class="page-header">
+            <h1 class="page-title">Dashboard</h1>
+            <p class="page-subtitle">Overview of your call analytics</p>
+          </div>
+          
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">Total Calls</div>
+              <div class="stat-value">${totalCalls}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Positive Sentiment</div>
+              <div class="stat-value">${positiveCount}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Negative Sentiment</div>
+              <div class="stat-value">${negativeCount}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Urgent Topics</div>
+              <div class="stat-value">${urgentCount}</div>
+            </div>
+          </div>
+          
+          <div class="recent-calls">
+            <h2 class="section-title">Recent Calls</h2>
+            <div class="call-list">
+              ${recentCalls.length > 0 ? recentCalls.map(call => {
+                const callerNumber = call.callerNumber || "Not available";
+                const callerName = call.callerName || null;
+                const displayCaller = callerName ? `${callerName} (${callerNumber})` : callerNumber;
+                const formatDate = new Date(call.createdAt).toLocaleString('en-US', { 
+                  month: 'short', 
+                  day: 'numeric', 
+                  year: 'numeric',
+                  hour: 'numeric',
+                  minute: '2-digit'
+                });
+                return `
+                  <div class="call-item">
+                    <div class="call-item-info">
+                      <div class="call-item-number">${displayCaller.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+                      <div class="call-item-date">${formatDate}</div>
+                    </div>
+                    <a href="/report" class="call-item-link">View Report</a>
+                  </div>
+                `;
+              }).join('') : '<p style="color: #787774;">No calls yet</p>'}
+            </div>
+          </div>
+        </div>
+      </body>
+    </html>
+  `);
+});
+
+// Helper function to parse analysis (needed for dashboard)
+function parseAnalysis(analysisText) {
+  const sections = {
+    summary: '',
+    actionItems: '',
+    sentiment: '',
+    urgentTopics: ''
+  };
+  
+  if (!analysisText) return sections;
+  
+  const lines = analysisText.split('\n');
+  let currentSection = null;
+  let currentContent = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    if (/^2\.\s*\*\*?Summary\*\*?/i.test(line) || /^2\.\s*Summary/i.test(line)) {
+      if (currentSection && currentContent.length > 0) {
+        sections[currentSection] = currentContent.join('\n').trim();
+      }
+      currentSection = 'summary';
+      currentContent = [];
+      continue;
+    }
+    
+    if (/^3\.\s*\*\*?Action\s+Items\*\*?/i.test(line) || /^3\.\s*Action\s+Items/i.test(line)) {
+      if (currentSection && currentContent.length > 0) {
+        sections[currentSection] = currentContent.join('\n').trim();
+      }
+      currentSection = 'actionItems';
+      currentContent = [];
+      continue;
+    }
+    
+    if (/^4\.\s*\*\*?Sentiment\*\*?/i.test(line) || /^4\.\s*Sentiment/i.test(line)) {
+      if (currentSection && currentContent.length > 0) {
+        sections[currentSection] = currentContent.join('\n').trim();
+      }
+      currentSection = 'sentiment';
+      currentContent = [];
+      continue;
+    }
+    
+    if (/^5\.\s*\*\*?Urgent\s+Topics\*\*?/i.test(line) || /^5\.\s*Urgent\s+Topics/i.test(line)) {
+      if (currentSection && currentContent.length > 0) {
+        sections[currentSection] = currentContent.join('\n').trim();
+      }
+      currentSection = 'urgentTopics';
+      currentContent = [];
+      continue;
+    }
+    
+    if (currentSection && line && !/^\d+\./.test(line)) {
+      const cleanLine = line.replace(/\*\*/g, '').replace(/^[-*•]\s*/, '').trim();
+      if (cleanLine) {
+        currentContent.push(cleanLine);
+      }
+    }
+  }
+  
+  if (currentSection && currentContent.length > 0) {
+    sections[currentSection] = currentContent.join('\n').trim();
+  }
+  
+  Object.keys(sections).forEach(key => {
+    sections[key] = sections[key]
+      .replace(/\*\*/g, '')
+      .replace(/^[-*•]\s*/gm, '')
+      .trim();
+  });
+  
+  return sections;
+}
+
+/**
  * 4️⃣ Simple webpage to show the latest call report
  */
 app.get("/report", (req, res) => {
@@ -340,7 +909,7 @@ app.get("/report", (req, res) => {
     return res.send(`
       <html>
         <body style="font-family: sans-serif; max-width: 800px; margin: 40px auto;">
-          <h1>Call Reports</h1>
+          <h1>Interactions</h1>
           <p>No calls analyzed yet. Make a call to your Twilio number first.</p>
         </body>
       </html>
@@ -493,7 +1062,7 @@ app.get("/report", (req, res) => {
     } else {
       // Default to neutral if unclear
       badgeClass = 'status-neutral';
-      badgeText = sentimentText.charAt(0).toUpperCase() + sentimentText.slice(1);
+      badgeText = sentimentText.charAt(0).toUpperCase() + sentimentText.slice(1).toLowerCase();
     }
     
     return `<span class="status-badge ${badgeClass}">${badgeText}</span>`;
@@ -507,516 +1076,1127 @@ app.get("/report", (req, res) => {
     return cleanText.substring(0, maxLength) + '...';
   };
   
-  // Generate table rows for all calls
+  // Generate spreadsheet-style table rows
   const tableRows = callHistory.map((call, index) => {
-    const displayCallerNumber = call.callerNumber || "Not available";
-    const formatDate = new Date(call.createdAt).toLocaleString();
+    const callerNumber = call.callerNumber || "Not available";
+    const callerName = call.callerName || null;
+    // Format: "Name (Number)" or just "Number" if no name
+    const displayCaller = callerName ? `${callerName} (${callerNumber})` : callerNumber;
+    const formatDate = new Date(call.createdAt).toLocaleString('en-US', { 
+      month: 'short', 
+      day: 'numeric', 
+      year: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit'
+    });
     const parsed = parseAnalysis(call.analysis);
     const rowId = `row-${index}`;
     
-    // Create previews
-    const transcriptPreview = createPreview(call.transcript, 60);
-    const summaryPreview = createPreview(parsed.summary, 50);
-    const actionItemsPreview = createPreview(parsed.actionItems, 50);
-    const urgentTopicsPreview = createPreview(parsed.urgentTopics, 40);
+    // Check if urgent topics actually exist (not "None" or empty)
+    const hasUrgentTopics = parsed.urgentTopics && 
+      parsed.urgentTopics.toLowerCase().trim() !== 'none' && 
+      parsed.urgentTopics.trim() !== '';
+    
+    // Create previews for table cells
+    const summaryPreview = createPreview(parsed.summary || 'No summary', 80);
+    const actionItemsPreview = createPreview(parsed.actionItems || 'None', 60);
+    const urgentTopicsPreview = createPreview(hasUrgentTopics ? parsed.urgentTopics : 'None', 50);
     
     return `
-              <tr class="data-row" data-row-id="${rowId}">
-                <td class="toggle-cell">
-                  <button class="toggle-icon" onclick="toggleRow('${rowId}')" aria-label="Toggle row">
-                    <span class="icon-plus">+</span>
-                    <span class="icon-minus" style="display: none;">−</span>
-                  </button>
-                </td>
-                <td class="caller-number">
-                  <div class="preview-content">${displayCallerNumber}</div>
-                  <div class="full-content" style="display: none;">${displayCallerNumber}</div>
-                </td>
-                <td class="timestamp">
-                  <div class="preview-content">${formatDate}</div>
-                  <div class="full-content" style="display: none;">${formatDate}</div>
-                </td>
-                <td class="content-cell">
-                  <div class="preview-content">${transcriptPreview}</div>
-                  <div class="full-content" style="display: none;">
-                    <div class="full-text">${call.transcript.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
-                  </div>
-                </td>
-                <td class="content-cell">
-                  <div class="preview-content">${summaryPreview}</div>
-                  <div class="full-content" style="display: none;">
-                    <div class="summary-text">${parsed.summary ? parsed.summary.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') : 'No summary available'}</div>
-                  </div>
-                </td>
-                <td class="content-cell">
-                  <div class="preview-content">${formatSentiment(parsed.sentiment)}</div>
-                  <div class="full-content" style="display: none;">
-                    <div class="sentiment-text">${formatSentiment(parsed.sentiment)}</div>
-                  </div>
-                </td>
-                <td class="content-cell">
-                  <div class="preview-content">${actionItemsPreview}</div>
-                  <div class="full-content" style="display: none;">
-                    <div class="summary-text">${formatActionItems(parsed.actionItems)}</div>
-                  </div>
-                </td>
-                <td class="content-cell">
-                  <div class="preview-content">${urgentTopicsPreview}</div>
-                  <div class="full-content" style="display: none;">
-                    <div class="summary-text">${parsed.urgentTopics ? parsed.urgentTopics.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') : 'None'}</div>
-                  </div>
-                </td>
-                <td class="audio-cell">
-                  ${call.recordingUrl ? `
-                    <audio controls preload="none" style="width: 100%; max-width: 200px; height: 32px;">
-                      <source src="/audio/${call.id}" type="audio/wav">
-                      Your browser does not support the audio element.
-                    </audio>
-                  ` : '<span style="color: #999; font-size: 12px;">No recording</span>'}
-                </td>
-              </tr>`;
+      <tr class="data-row" data-row-id="${rowId}" onclick="toggleRow('${rowId}')" style="cursor: pointer;">
+        <td class="cell-expand">
+          <button class="expand-row-btn" onclick="event.stopPropagation(); toggleRow('${rowId}')" aria-label="Expand row">
+            <svg class="expand-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M6 4l4 4-4 4"/>
+            </svg>
+          </button>
+        </td>
+        <td class="cell-caller">
+          <div class="cell-content">${displayCaller.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+        </td>
+        <td class="cell-date">
+          <div class="cell-content">${formatDate}</div>
+        </td>
+        <td class="cell-summary">
+          <div class="cell-content">${summaryPreview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+        </td>
+        <td class="cell-sentiment">
+          <div class="cell-content">${formatSentiment(parsed.sentiment)}</div>
+        </td>
+        <td class="cell-actions">
+          <div class="cell-content">${actionItemsPreview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+        </td>
+        <td class="cell-urgent">
+          <div class="cell-content">${urgentTopicsPreview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+        </td>
+        <td class="cell-audio">
+          <div class="cell-content">
+            ${call.recordingUrl ? `
+              <button class="audio-play-btn" onclick="event.stopPropagation(); toggleAudio('${call.id}')" aria-label="Play audio">
+                <svg class="play-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+                <svg class="pause-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display: none;">
+                  <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
+                </svg>
+              </button>
+              <audio id="audio-${call.id}" preload="none" onended="resetAudioButton('${call.id}')">
+                <source src="/audio/${call.id}" type="audio/wav">
+              </audio>
+            ` : '<span class="no-audio">—</span>'}
+          </div>
+        </td>
+      </tr>
+      <tr class="expanded-row" data-expanded-for="${rowId}" style="display: none;">
+        <td colspan="8" class="expanded-content-cell">
+          <div class="expanded-details">
+            <div class="detail-section">
+              <div class="detail-label">Summary</div>
+              <div class="detail-value">${parsed.summary ? parsed.summary.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') : 'No summary available'}</div>
+            </div>
+            ${parsed.actionItems ? `
+            <div class="detail-section">
+              <div class="detail-label">Action Items</div>
+              <div class="detail-value">${formatActionItems(parsed.actionItems)}</div>
+            </div>
+            ` : ''}
+            ${parsed.urgentTopics ? `
+            <div class="detail-section ${hasUrgentTopics ? 'urgent-detail' : ''}">
+              <div class="detail-label">Urgent Topics</div>
+              <div class="detail-value ${hasUrgentTopics ? 'urgent-text' : ''}">${parsed.urgentTopics.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</div>
+            </div>
+            ` : ''}
+            ${call.recordingUrl ? `
+            <div class="detail-section">
+              <div class="detail-label">Audio Recording</div>
+              <div class="detail-value">
+                <button class="audio-play-btn detail-audio-btn" onclick="toggleAudio('${call.id}-detail')" aria-label="Play audio">
+                  <svg class="play-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M8 5v14l11-7z"/>
+                  </svg>
+                  <svg class="pause-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="display: none;">
+                    <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
+                  </svg>
+                </button>
+                <audio id="audio-${call.id}-detail" preload="none" onended="resetAudioButton('${call.id}-detail')">
+                  <source src="/audio/${call.id}" type="audio/wav">
+                </audio>
+              </div>
+            </div>
+            ` : ''}
+            <div class="detail-section transcript-section">
+              <div class="detail-label">Full Transcript</div>
+              <div class="detail-value transcript-text">${call.transcript.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')}</div>
+            </div>
+          </div>
+        </td>
+      </tr>
+    `;
   }).join('');
 
   res.send(`
-    <html>
+    <!DOCTYPE html>
+    <html lang="en">
       <head>
-        <title>Call Reports</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Interactions</title>
+        <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
         <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
+          * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+          }
+          
           body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-            background: #f5f5f5;
-            padding: 20px;
-          }
-          .container {
-            width: 100%;
-            max-width: 100%;
-            margin: 0;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            overflow: hidden;
-          }
-          body {
-            overflow-x: hidden;
-          }
-          h1 {
-            padding: 0;
-            background: transparent;
-            color: white;
-            font-size: 24px;
-            margin: 0;
-            flex: 0 0 auto;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-            table-layout: fixed;
-          }
-          thead {
-            background: #34495e;
-            color: white;
-          }
-          th {
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-            border-bottom: 2px solid #2c3e50;
-          }
-          td {
-            padding: 12px;
-            border-bottom: 1px solid #e0e0e0;
-            vertical-align: top;
-            overflow: hidden;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-            position: relative;
-          }
-          /* Ensure all cells align to top consistently */
-          td.caller-number,
-          td.timestamp {
-            vertical-align: top;
-          }
-          td:nth-child(8) {
-            overflow: hidden !important;
-          }
-          .toggle-cell {
-            width: 3%;
-          }
-          .caller-number {
-            width: 9%;
-          }
-          .timestamp {
-            width: 11%;
-          }
-          .audio-cell {
-            width: 9%;
-            text-align: center;
-            vertical-align: middle;
-            padding: 8px !important;
-          }
-          .audio-cell audio {
-            width: 100%;
-            max-width: 180px;
-            height: 32px;
-            outline: none;
-          }
-          .audio-cell audio::-webkit-media-controls-panel {
-            background-color: #f5f5f5;
-          }
-          .content-cell {
-            overflow: hidden;
-            word-wrap: break-word;
-            overflow-wrap: break-word;
-            max-width: 100%;
-          }
-          .full-content {
-            max-width: 100%;
-            overflow-wrap: break-word;
-            word-wrap: break-word;
-          }
-          .full-content .full-text {
-            max-width: 100%;
-            overflow-wrap: break-word;
-          }
-          /* Responsive column widths - percentages add up to 100% */
-          td:nth-child(4),
-          th:nth-child(4) {
-            width: 18%;
-          }
-          td:nth-child(5),
-          th:nth-child(5) {
-            width: 18%;
-          }
-          td:nth-child(6),
-          th:nth-child(6) {
-            width: 9%;
-          }
-          td:nth-child(7),
-          th:nth-child(7) {
-            width: 12%;
-          }
-          td:nth-child(8),
-          th:nth-child(8) {
-            width: 11%;
-            overflow: hidden !important;
-            word-wrap: break-word !important;
-            overflow-wrap: break-word !important;
-            word-break: break-word !important;
-          }
-          td:nth-child(9),
-          th:nth-child(9) {
-            width: 9%;
-          }
-          /* Ensure urgent topics column wraps properly - apply to all children */
-          td:nth-child(8) * {
-            word-wrap: break-word !important;
-            overflow-wrap: break-word !important;
-            word-break: break-word !important;
-            max-width: 100% !important;
-            white-space: normal !important;
-            box-sizing: border-box !important;
-          }
-          td:nth-child(8) .content-cell,
-          td:nth-child(8) .full-content,
-          td:nth-child(8) .preview-content,
-          td:nth-child(8) .summary-text {
-            word-wrap: break-word !important;
-            overflow-wrap: break-word !important;
-            word-break: break-word !important;
-            max-width: 100% !important;
-            white-space: normal !important;
-            overflow: hidden !important;
-            box-sizing: border-box !important;
-          }
-          tbody tr:hover {
-            background: #f9f9f9;
-          }
-          thead tr:hover {
-            background: #34495e;
-          }
-          .summary-text, .sentiment-text {
-            min-height: 20px;
-            padding: 0;
-            margin: 0;
-          }
-          .full-text {
-            background: transparent;
-            padding: 0;
-            border-radius: 0;
-            font-size: 13px;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: #ffffff;
+            color: #37352f;
             line-height: 1.5;
-            max-height: 200px;
-            overflow-y: auto;
-            margin: 0;
-          }
-          .summary-text, .sentiment-text {
-            font-size: 13px;
-            line-height: 1.5;
-          }
-          .timestamp {
-            white-space: nowrap;
-            font-size: 13px;
-            line-height: 1.5;
-            color: #333;
-          }
-          .caller-number {
-            font-size: 13px;
-            line-height: 1.5;
-            color: #333;
-          }
-          .action-item {
-            margin: 0;
-            margin-bottom: 8px;
-            line-height: 1.6;
-          }
-          .action-item:first-child {
-            margin-top: 0;
-          }
-          .status-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 3px;
-            font-size: 11px;
-            font-weight: 500;
-            line-height: 1.4;
-            margin-right: 6px;
-            vertical-align: middle;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-          }
-          .status-positive {
-            background-color: #D4EDDA;
-            color: #155724;
-            border: 1px solid #C3E6CB;
-          }
-          .status-negative {
-            background-color: #F8D7DA;
-            color: #721C24;
-            border: 1px solid #F5C6CB;
-          }
-          .status-neutral {
-            background-color: #E2E3E5;
-            color: #383D41;
-            border: 1px solid #D6D8DB;
-          }
-          .toggle-cell {
-            width: 40px;
-            padding: 8px 4px !important;
-            text-align: center;
-            vertical-align: middle;
-          }
-          .toggle-icon {
-            background: none;
-            border: none;
-            cursor: pointer;
-            padding: 4px;
-            width: 24px;
-            height: 24px;
+            min-height: 100vh;
+            font-size: 14px;
             display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: 3px;
-            color: #787878;
-            font-size: 16px;
-            font-weight: 300;
-            transition: all 0.2s ease;
           }
-          .toggle-icon:hover {
-            background-color: #f0f0f0;
-            color: #37352f;
-          }
-          .icon-plus, .icon-minus {
-            display: inline-block;
-            line-height: 1;
-          }
-          .preview-content,
-          .full-content {
-            font-size: 13px;
-            line-height: 1.5;
-            color: #37352f;
-            margin: 0;
-            padding: 0;
-            display: block;
-            position: relative;
-            top: 0;
+          
+          .sidebar {
+            width: 240px;
+            background: #ffffff;
+            border-right: 1px solid #e9e9e7;
+            height: 100vh;
+            position: fixed;
             left: 0;
-          }
-          .preview-content {
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-          }
-          .full-content {
-            overflow-wrap: break-word;
-            word-wrap: break-word;
-            white-space: normal;
-          }
-          .data-row.expanded .preview-content {
-            display: none;
-          }
-          .data-row.expanded .full-content {
-            display: block !important;
-          }
-          .data-row:not(.expanded) .preview-content {
-            display: block;
-          }
-          .data-row:not(.expanded) .full-content {
-            display: none !important;
-          }
-          /* Ensure all content starts at the same vertical position */
-          td > .preview-content,
-          td > .full-content {
-            margin-top: 0;
-            padding-top: 0;
-            vertical-align: top;
-          }
-          /* Remove any top margin/padding from first child in full-content */
-          .full-content > *:first-child {
-            margin-top: 0 !important;
-            padding-top: 0 !important;
-          }
-          /* Ensure nested divs don't add extra spacing */
-          .full-content .full-text,
-          .full-content .summary-text,
-          .full-content .sentiment-text {
-            margin-top: 0;
-          }
-          .data-row.expanded .icon-plus {
-            display: none;
-          }
-          .data-row.expanded .icon-minus {
-            display: inline-block !important;
-          }
-          .data-row:not(.expanded) .icon-plus {
-            display: inline-block;
-          }
-          .data-row:not(.expanded) .icon-minus {
-            display: none !important;
-          }
-          .header-container {
-            padding: 20px;
-            background: #2c3e50;
+            top: 0;
             display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 20px;
+            flex-direction: column;
+            z-index: 1000;
           }
-          .search-container {
+          
+          .sidebar-header {
+            padding: 20px 16px;
+            border-bottom: 1px solid #e9e9e7;
             display: flex;
             align-items: center;
             gap: 12px;
-            flex: 0 0 auto;
           }
-          .search-box {
-            flex: 0 0 auto;
-            max-width: 250px;
-            width: 250px;
-            padding: 8px 12px;
-            border: 1px solid #4a5568;
+          
+          .sidebar-logo {
+            width: 32px;
+            height: 32px;
+            background: #37352f;
             border-radius: 4px;
-            background: white;
-            font-size: 14px;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-            color: #37352f;
-            outline: none;
-            transition: border-color 0.2s;
-          }
-          .search-box:focus {
-            border-color: #3498db;
-            box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.1);
-          }
-          .search-box::placeholder {
-            color: #999;
-          }
-          .search-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
             color: white;
             font-size: 18px;
-            margin-right: 4px;
           }
+          
+          .sidebar-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #37352f;
+          }
+          
+          .sidebar-nav {
+            padding: 8px;
+            flex: 1;
+          }
+          
+          .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 4px;
+            text-decoration: none;
+            color: #37352f;
+            font-size: 14px;
+            transition: background-color 0.15s ease;
+            margin-bottom: 4px;
+          }
+          
+          .nav-item:hover {
+            background: #f7f6f3;
+          }
+          
+          .nav-item.active {
+            background: #f1f1ef;
+            font-weight: 500;
+          }
+          
+          .nav-icon {
+            font-size: 18px;
+            width: 24px;
+            text-align: center;
+          }
+          
+          .main-content {
+            margin-left: 240px;
+            flex: 1;
+            width: calc(100% - 240px);
+          }
+          
+          .app-container {
+            width: 100%;
+            padding: 0;
+          }
+          
+          .header {
+            background: #ffffff;
+            border-bottom: 1px solid #e9e9e7;
+            padding: 20px 24px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+            background: rgba(255, 255, 255, 0.95);
+          }
+          
+          .header-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+            gap: 16px;
+          }
+          
+          .logo-section {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+          }
+          
+          .logo-icon {
+            width: 36px;
+            height: 36px;
+            background: #37352f;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 20px;
+            font-weight: 500;
+          }
+          
+          .header-title {
+            font-size: 22px;
+            font-weight: 600;
+            color: #37352f;
+            letter-spacing: -0.4px;
+          }
+          
+          .result-count {
+            color: #787774;
+            font-size: 13px;
+            font-weight: 400;
+            margin-left: 10px;
+          }
+          
+          .search-wrapper {
+            position: relative;
+            max-width: 420px;
+            width: 100%;
+          }
+          
+          .column-headers {
+            display: flex;
+            align-items: center;
+            padding: 12px 0 0 0;
+            border-top: 1px solid #e9e9e7;
+            margin-top: 16px;
+            background: #ffffff;
+          }
+          
+          .header-cell {
+            padding: 10px 16px;
+            font-weight: 600;
+            font-size: 11px;
+            color: #787774;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            white-space: nowrap;
+            flex-shrink: 0;
+            text-align: left;
+            line-height: 1.4;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+          }
+          
+          .header-cell.cell-expand {
+            width: 48px;
+            padding: 10px 12px;
+            flex-shrink: 0;
+            text-align: center;
+          }
+          
+          .header-cell.cell-caller,
+          .header-cell.cell-date,
+          .header-cell.cell-summary,
+          .header-cell.cell-sentiment,
+          .header-cell.cell-actions,
+          .header-cell.cell-urgent,
+          .header-cell.cell-audio {
+            font-weight: 600;
+            font-size: 11px;
+            color: #787774;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            text-align: left;
+            line-height: 1.4;
+          }
+          
+          .header-cell.cell-caller {
+            width: 240px;
+            min-width: 240px;
+            max-width: 240px;
+          }
+          
+          .header-cell.cell-date {
+            width: 180px;
+            min-width: 180px;
+            max-width: 180px;
+          }
+          
+          .header-cell.cell-summary {
+            min-width: 280px;
+            max-width: 400px;
+            flex: 1;
+          }
+          
+          .header-cell.cell-sentiment {
+            width: 110px;
+            min-width: 110px;
+            max-width: 110px;
+          }
+          
+          .header-cell.cell-actions {
+            min-width: 220px;
+            max-width: 320px;
+            flex: 1;
+          }
+          
+          .header-cell.cell-urgent {
+            min-width: 180px;
+            max-width: 280px;
+            flex: 1;
+          }
+          
+          .header-cell.cell-audio {
+            width: 140px;
+            min-width: 140px;
+            max-width: 140px;
+          }
+          
+          .search-container {
+            display: flex;
+            align-items: center;
+            background: #f7f6f3;
+            border: 1px solid #e9e9e7;
+            border-radius: 4px;
+            padding: 0 12px;
+            height: 32px;
+            transition: all 0.2s ease;
+          }
+          
+          .search-container:hover {
+            background: #f1f1ef;
+          }
+          
+          .search-container.focused {
+            background: #ffffff;
+            border-color: #37352f;
+            box-shadow: 0 0 0 2px rgba(55, 53, 47, 0.1);
+          }
+          
+          .search-icon {
+            width: 16px;
+            height: 16px;
+            color: #787774;
+            margin-right: 8px;
+            flex-shrink: 0;
+          }
+          
+          .search-input {
+            flex: 1;
+            border: none;
+            outline: none;
+            font-size: 14px;
+            font-family: 'Inter', sans-serif;
+            color: #37352f;
+            background: transparent;
+          }
+          
+          .search-input::placeholder {
+            color: #9b9a97;
+          }
+          
+          .clear-button {
+            display: none;
+            width: 16px;
+            height: 16px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            padding: 0;
+            margin-left: 8px;
+            color: #787774;
+            flex-shrink: 0;
+          }
+          
+          .clear-button.visible {
+            display: block;
+          }
+          
+          .clear-icon {
+            width: 100%;
+            height: 100%;
+          }
+          
+          .table-wrapper {
+            overflow-x: auto;
+            width: 100%;
+            background: #ffffff;
+            margin-top: 0;
+          }
+          
+          .header .column-headers {
+            overflow-x: auto;
+            margin-left: 0;
+            margin-right: 0;
+          }
+          
+          .header .column-headers::-webkit-scrollbar,
+          .table-wrapper::-webkit-scrollbar {
+            height: 8px;
+          }
+          
+          .header .column-headers::-webkit-scrollbar-track,
+          .table-wrapper::-webkit-scrollbar-track {
+            background: #f7f6f3;
+          }
+          
+          .header .column-headers::-webkit-scrollbar-thumb,
+          .table-wrapper::-webkit-scrollbar-thumb {
+            background: #d1d1cf;
+            border-radius: 4px;
+          }
+          
+          .header .column-headers::-webkit-scrollbar-thumb:hover,
+          .table-wrapper::-webkit-scrollbar-thumb:hover {
+            background: #9b9a97;
+          }
+          
+          .data-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+            background: #ffffff;
+          }
+          
+          .data-table td {
+            padding: 14px 16px;
+            border-bottom: 1px solid #f1f1ef;
+            vertical-align: middle;
+            background: #ffffff;
+          }
+          
+          .data-table tbody tr {
+            transition: background-color 0.15s ease;
+          }
+          
+          .data-table tbody tr:hover {
+            background: #f7f6f3;
+          }
+          
+          .data-table tbody tr:hover td {
+            background: #f7f6f3;
+          }
+          
+          .data-table tbody tr.expanded-row {
+            background: #fafafa;
+          }
+          
+          .data-table tbody tr.expanded-row td {
+            border-bottom: 1px solid #e9e9e7;
+            background: #fafafa;
+          }
+          
+          .cell-expand {
+            width: 48px;
+            padding: 14px 12px !important;
+            text-align: center;
+          }
+          
+          .expand-row-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 6px;
+            border-radius: 4px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: #9b9a97;
+            transition: all 0.15s ease;
+            width: 28px;
+            height: 28px;
+          }
+          
+          .expand-row-btn:hover {
+            background: none;
+            color: #37352f;
+          }
+          
+          .data-row.expanded .expand-icon {
+            transform: rotate(90deg);
+          }
+          
+          .expand-icon {
+            transition: transform 0.2s ease;
+            width: 14px;
+            height: 14px;
+          }
+          
+          .cell-content {
+            color: #37352f;
+            font-size: 14px;
+            line-height: 1.5;
+            word-wrap: break-word;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+          }
+          
+          .cell-caller {
+            width: 240px;
+            min-width: 240px;
+            max-width: 300px;
+          }
+          
+          .cell-caller .cell-content {
+            -webkit-line-clamp: 2;
+            font-weight: normal;
+            color: #37352f;
+            font-size: 14px;
+          }
+          
+          .cell-date {
+            width: 180px;
+            min-width: 180px;
+            max-width: 200px;
+            color: #787774;
+            font-size: 13px;
+          }
+          
+          .cell-date .cell-content {
+            -webkit-line-clamp: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: block;
+          }
+          
+          .cell-summary {
+            min-width: 280px;
+            max-width: 400px;
+          }
+          
+          .cell-sentiment {
+            width: 110px;
+            min-width: 110px;
+            max-width: 130px;
+          }
+          
+          .cell-sentiment .cell-content {
+            display: block;
+            -webkit-line-clamp: 1;
+          }
+          
+          .cell-actions {
+            min-width: 220px;
+            max-width: 320px;
+          }
+          
+          .cell-urgent {
+            min-width: 180px;
+            max-width: 280px;
+          }
+          
+          .cell-audio {
+            width: 140px;
+            min-width: 140px;
+            max-width: 180px;
+          }
+          
+          .cell-audio .cell-content {
+            display: flex;
+            align-items: center;
+            -webkit-line-clamp: 1;
+          }
+          
+          .audio-play-btn {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            border: 1px solid #e9e9e7;
+            background: #ffffff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            padding: 0;
+            outline: none;
+            color: #37352f;
+          }
+          
+          .audio-play-btn:hover {
+            background: #f7f6f3;
+            border-color: #d1d1cf;
+          }
+          
+          .audio-play-btn:active {
+            transform: scale(0.95);
+          }
+          
+          .audio-play-btn.playing {
+            background: #f1f1ef;
+            border-color: #37352f;
+          }
+          
+          .audio-play-btn svg {
+            width: 14px;
+            height: 14px;
+          }
+          
+          .detail-audio-btn {
+            width: 40px;
+            height: 40px;
+          }
+          
+          .detail-audio-btn svg {
+            width: 18px;
+            height: 18px;
+          }
+          
+          .no-audio {
+            color: #9b9a97;
+            font-size: 12px;
+            font-style: italic;
+          }
+          
+          .expanded-content-cell {
+            padding: 20px 24px !important;
+            background: #fafafa;
+            border-bottom: 1px solid #e9e9e7 !important;
+          }
+          
+          .expanded-details {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+            max-width: 1200px;
+          }
+          
+          .detail-section {
+            background: #ffffff;
+            border: 1px solid #e9e9e7;
+            border-radius: 6px;
+            padding: 16px 20px;
+          }
+          
+          .detail-section.transcript-section {
+            grid-column: 3;
+            grid-row: 1 / -1;
+          }
+          
+          .detail-section.urgent-detail {
+            border-left: 4px solid #e16259;
+            background: #fff5f3;
+          }
+          
+          .detail-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #787774;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            margin-bottom: 10px;
+            display: block;
+          }
+          
+          .detail-value {
+            font-size: 14px;
+            color: #37352f;
+            line-height: 1.65;
+          }
+          
+          .urgent-text {
+            color: #e16259;
+            font-weight: 500;
+          }
+          
+          .transcript-text {
+            max-height: 350px;
+            overflow-y: auto;
+            font-size: 14px;
+            color: #37352f;
+            line-height: 1.65;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+          }
+          
+          
+          .status-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: 400;
+            letter-spacing: 0;
+            white-space: nowrap;
+            line-height: 1.4;
+            border: none;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+          }
+          
+          .status-positive {
+            background-color: rgba(46, 170, 220, 0.12);
+            color: #0b6e99;
+          }
+          
+          .status-negative {
+            background-color: rgba(235, 87, 87, 0.12);
+            color: #d1242f;
+          }
+          
+          .status-neutral {
+            background-color: rgba(55, 53, 47, 0.09);
+            color: #37352f;
+          }
+          
+          .action-item {
+            padding: 10px 0;
+            border-bottom: 1px solid #f1f1ef;
+            line-height: 1.6;
+            display: flex;
+            align-items: flex-start;
+          }
+          
+          .action-item:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+          }
+          
+          .action-item:first-child {
+            padding-top: 0;
+          }
+          
+          .action-item::before {
+            content: "→";
+            color: #787774;
+            font-weight: normal;
+            margin-right: 10px;
+            font-size: 14px;
+            flex-shrink: 0;
+            margin-top: 2px;
+          }
+          
+          .empty-state {
+            text-align: center;
+            padding: 100px 24px;
+            background: #ffffff;
+          }
+          
+          .empty-state-icon {
+            font-size: 56px;
+            margin-bottom: 20px;
+            opacity: 0.3;
+          }
+          
+          .empty-state-text {
+            font-size: 15px;
+            color: #787774;
+            line-height: 1.6;
+          }
+          
           .row-hidden {
             display: none !important;
+          }
+          
+          @media (max-width: 768px) {
+            .header {
+              padding: 16px 20px;
+            }
+            
+            .header-title {
+              font-size: 20px;
+            }
+            
+            .column-headers {
+              padding: 10px 0 0 0;
+              margin-top: 12px;
+            }
+            
+            .header-cell {
+              padding: 8px 12px;
+              font-size: 10px;
+            }
+            
+            .header-cell.cell-expand {
+              width: 44px;
+              padding: 8px 8px;
+            }
+            
+            .header-cell.cell-caller,
+            .header-cell.cell-date,
+            .header-cell.cell-summary,
+            .header-cell.cell-actions,
+            .header-cell.cell-urgent {
+              min-width: 150px;
+              max-width: 200px;
+            }
+            
+            .data-table td {
+              padding: 12px;
+              font-size: 13px;
+            }
+            
+            .cell-expand {
+              width: 44px;
+              padding: 12px 8px !important;
+            }
+            
+            .cell-caller,
+            .cell-date,
+            .cell-summary,
+            .cell-actions,
+            .cell-urgent {
+              min-width: 150px;
+              max-width: 200px;
+            }
+            
+            .expanded-content-cell {
+              padding: 16px !important;
+            }
+            
+            .expanded-details {
+              grid-template-columns: 1fr;
+            }
+            
+            .sidebar {
+              width: 200px;
+            }
+            
+            .main-content {
+              margin-left: 200px;
+              width: calc(100% - 200px);
+            }
           }
         </style>
         <script>
           function toggleRow(rowId) {
-            const row = document.querySelector('tr[data-row-id="' + rowId + '"]');
-            if (row) {
-              row.classList.toggle('expanded');
+            const row = document.querySelector('[data-row-id="' + rowId + '"]');
+            const expandedRow = document.querySelector('[data-expanded-for="' + rowId + '"]');
+            
+            if (row && expandedRow) {
+              const isExpanded = expandedRow.style.display !== 'none';
+              
+              if (isExpanded) {
+                expandedRow.style.display = 'none';
+                row.classList.remove('expanded');
+              } else {
+                expandedRow.style.display = '';
+                row.classList.add('expanded');
+              }
             }
           }
           
-          function filterTable() {
+          function filterRows() {
             const input = document.getElementById('searchInput');
             if (!input) return;
             
             const filter = input.value.toLowerCase().trim();
-            const rows = document.querySelectorAll('tbody tr.data-row');
+            const rows = document.querySelectorAll('.data-row');
             let visibleCount = 0;
             
             rows.forEach(function(row) {
-              // Get all text content from the row
               const rowText = row.textContent || row.innerText || '';
               const rowTextLower = rowText.toLowerCase();
+              const rowId = row.getAttribute('data-row-id');
+              const expandedRow = document.querySelector('[data-expanded-for="' + rowId + '"]');
               
-              // Check if search term matches
               if (!filter || rowTextLower.includes(filter)) {
                 row.classList.remove('row-hidden');
+                if (expandedRow) {
+                  expandedRow.classList.remove('row-hidden');
+                }
                 visibleCount++;
               } else {
                 row.classList.add('row-hidden');
+                if (expandedRow) {
+                  expandedRow.classList.add('row-hidden');
+                }
               }
             });
             
-            // Update result count
             const resultCount = document.getElementById('resultCount');
             if (resultCount) {
-              resultCount.textContent = visibleCount;
+              resultCount.textContent = visibleCount + ' calls';
+            }
+            
+            const clearButton = document.getElementById('clearButton');
+            if (clearButton) {
+              if (filter) {
+                clearButton.classList.add('visible');
+              } else {
+                clearButton.classList.remove('visible');
+              }
             }
           }
+          
+          function clearSearch() {
+            const input = document.getElementById('searchInput');
+            if (input) {
+              input.value = '';
+              filterRows();
+              input.focus();
+            }
+          }
+          
+          function toggleAudio(audioId) {
+            const audio = document.getElementById('audio-' + audioId);
+            if (!audio) return;
+            
+            // Find the button - it's the previous sibling or in the same parent
+            let btn = audio.previousElementSibling;
+            if (!btn || !btn.classList.contains('audio-play-btn')) {
+              btn = audio.parentElement.querySelector('.audio-play-btn');
+            }
+            
+            if (!btn) return;
+            
+            // Pause all other audio players
+            document.querySelectorAll('audio').forEach(a => {
+              if (a !== audio && !a.paused) {
+                a.pause();
+                a.currentTime = 0;
+                let otherBtn = a.previousElementSibling;
+                if (!otherBtn || !otherBtn.classList.contains('audio-play-btn')) {
+                  otherBtn = a.parentElement.querySelector('.audio-play-btn');
+                }
+                if (otherBtn) {
+                  otherBtn.classList.remove('playing');
+                  const playIcon = otherBtn.querySelector('.play-icon');
+                  const pauseIcon = otherBtn.querySelector('.pause-icon');
+                  if (playIcon) playIcon.style.display = '';
+                  if (pauseIcon) pauseIcon.style.display = 'none';
+                }
+              }
+            });
+            
+            if (audio.paused) {
+              audio.play();
+              btn.classList.add('playing');
+              const playIcon = btn.querySelector('.play-icon');
+              const pauseIcon = btn.querySelector('.pause-icon');
+              if (playIcon) playIcon.style.display = 'none';
+              if (pauseIcon) pauseIcon.style.display = '';
+            } else {
+              audio.pause();
+              btn.classList.remove('playing');
+              const playIcon = btn.querySelector('.play-icon');
+              const pauseIcon = btn.querySelector('.pause-icon');
+              if (playIcon) playIcon.style.display = '';
+              if (pauseIcon) pauseIcon.style.display = 'none';
+            }
+          }
+          
+          function resetAudioButton(audioId) {
+            const audio = document.getElementById('audio-' + audioId);
+            if (!audio) return;
+            
+            let btn = audio.previousElementSibling;
+            if (!btn || !btn.classList.contains('audio-play-btn')) {
+              btn = audio.parentElement.querySelector('.audio-play-btn');
+            }
+            
+            if (btn) {
+              btn.classList.remove('playing');
+              const playIcon = btn.querySelector('.play-icon');
+              const pauseIcon = btn.querySelector('.pause-icon');
+              if (playIcon) playIcon.style.display = '';
+              if (pauseIcon) pauseIcon.style.display = 'none';
+            }
+          }
+          
+          document.addEventListener('DOMContentLoaded', function() {
+            const searchInput = document.getElementById('searchInput');
+            const searchContainer = document.querySelector('.search-container');
+            
+            if (searchInput) {
+              searchInput.addEventListener('focus', function() {
+                searchContainer.classList.add('focused');
+              });
+              
+              searchInput.addEventListener('blur', function() {
+                searchContainer.classList.remove('focused');
+              });
+              
+              searchInput.addEventListener('input', filterRows);
+            }
+            
+            // Sync horizontal scrolling between column headers and table
+            const columnHeaders = document.querySelector('.column-headers');
+            const tableWrapper = document.querySelector('.table-wrapper');
+            
+            if (columnHeaders && tableWrapper) {
+              tableWrapper.addEventListener('scroll', function() {
+                columnHeaders.scrollLeft = tableWrapper.scrollLeft;
+              });
+              
+              columnHeaders.addEventListener('scroll', function() {
+                tableWrapper.scrollLeft = columnHeaders.scrollLeft;
+              });
+            }
+          });
         </script>
       </head>
       <body>
-        <div class="container">
-          <div class="header-container">
-            <h1>Call Reports (<span id="resultCount">${callHistory.length}</span> total)</h1>
-            <div class="search-container">
-              <span class="search-icon">🔍</span>
-              <input 
-                type="text" 
-                class="search-box" 
-                id="searchInput" 
-                placeholder="Search..." 
-                onkeyup="filterTable()"
-              />
+        ${generateSidebar('reports')}
+        <div class="main-content">
+          <div class="app-container">
+          <div class="header">
+            <div class="header-top">
+              <div class="logo-section">
+                <div class="logo-icon">📞</div>
+                <h1 class="header-title">
+                  Interactions
+                  <span class="result-count" id="resultCount">${callHistory.length} calls</span>
+                </h1>
+              </div>
             </div>
+            <div class="search-wrapper">
+              <div class="search-container">
+                <svg class="search-icon" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                  <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                </svg>
+                <input 
+                  type="text" 
+                  class="search-input" 
+                  id="searchInput" 
+                  placeholder="Search calls..." 
+                  autocomplete="off"
+                />
+                <button class="clear-button" id="clearButton" onclick="clearSearch()" aria-label="Clear search">
+                  <svg class="clear-icon" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            ${callHistory.length > 0 ? `
+            <div class="column-headers">
+              <div class="header-cell cell-expand"></div>
+              <div class="header-cell cell-caller">Caller</div>
+              <div class="header-cell cell-date">Date &amp; Time</div>
+              <div class="header-cell cell-summary">Summary</div>
+              <div class="header-cell cell-sentiment">Sentiment</div>
+              <div class="header-cell cell-actions">Action Items</div>
+              <div class="header-cell cell-urgent">Urgent Topics</div>
+              <div class="header-cell cell-audio">Listen</div>
+            </div>
+            ` : ''}
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th style="width: 3%;"></th>
-                <th style="width: 9%;">Caller Number</th>
-                <th style="width: 11%;">Time</th>
-                <th style="width: 18%;">Full Text</th>
-                <th style="width: 18%;">Summary</th>
-                <th style="width: 9%;">Sentiment</th>
-                <th style="width: 12%;">Action Items</th>
-                <th style="width: 11%;">Urgent Topics</th>
-                <th style="width: 9%;">Audio</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${tableRows}
-            </tbody>
-          </table>
+          <div class="table-wrapper">
+            ${callHistory.length > 0 ? `
+              <table class="data-table">
+                <tbody>
+                  ${tableRows}
+                </tbody>
+              </table>
+            ` : `
+              <div class="empty-state">
+                <div class="empty-state-icon">📭</div>
+                <div class="empty-state-text">No calls analyzed yet. Make a call to your Twilio number first.</div>
+              </div>
+            `}
+          </div>
+        </div>
         </div>
       </body>
     </html>
   `);
 });
 
-// Optional: root endpoint for testing in a browser
+// Root endpoint redirects to dashboard
 app.get("/", (req, res) => {
-  res.send("Server is running!");
+  res.redirect("/dashboard");
 });
 
 app.listen(port, () => {
