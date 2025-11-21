@@ -1,25 +1,55 @@
 # Dependencies
 node_modules/
-package-lock.json
+.pnp
+.pnp.js
+
+# Testing
+coverage/
+
+# Production
+build/
+dist/
+.next/
+out/
 
 # Environment variables
 .env
 .env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
-# Call history (contains sensitive data)
-calls-history.json
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
 
-# Temporary files
-temp-recording.wav
-*.wav
-
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
-# IDE files
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
+# Temporary files
+temp-*.wav
+*.tmp
+calls-history.json
+
+# Database
+*.sqlite
+*.db
+
+# PM2
+.pm2/
+
+# Redis dump
+dump.rdb
