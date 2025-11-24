@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useSession, signOut } from 'next-auth/react'
-import { LayoutDashboard, Phone, Settings, LogOut, ChevronDown, User, Sliders, PhoneCall } from 'lucide-react'
+import { LayoutDashboard, Phone, Settings, LogOut, ChevronDown, User, Sliders, PhoneCall, ServerCog } from 'lucide-react'
 import { useState } from 'react'
 import styles from './Sidebar.module.css'
 
@@ -34,6 +34,7 @@ export default function Sidebar() {
     { href: '/settings/account', label: 'Account Settings', icon: User },
     { href: '/settings/preferences', label: 'Preferences', icon: Sliders },
     { href: '/settings/twilio', label: 'Twilio Call Settings', icon: PhoneCall },
+    { href: '/settings/freepbx', label: 'FreePBX Integration', icon: ServerCog },
   ]
 
   return (

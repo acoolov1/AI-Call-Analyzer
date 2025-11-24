@@ -176,7 +176,7 @@ export async function queueTranscription(callId, recordingUrl) {
     // Fallback to synchronous processing
     logger.info({ callId }, 'Redis not available, processing synchronously');
     const { CallProcessingService } = await import('../services/call-processing.service.js');
-    return await CallProcessingService.processRecording(callId, recordingUrl);
+    return await CallProcessingService.processRecording(callId, { recordingUrl });
   }
   
   const job = await transcriptionQueue.add(

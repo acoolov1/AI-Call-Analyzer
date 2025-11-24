@@ -1,6 +1,6 @@
 import { query } from '../config/database.js';
 import { NotFoundError } from '../utils/errors.js';
-import { CALL_STATUS } from '../utils/constants.js';
+import { CALL_SOURCE, CALL_STATUS } from '../utils/constants.js';
 
 export class Call {
   static async create(data) {
@@ -11,16 +11,45 @@ export class Call {
       callerNumber,
       callerName,
       recordingUrl,
+      recordingPath = null,
       status = CALL_STATUS.PENDING,
+      source = CALL_SOURCE.TWILIO,
+      externalId = null,
+      externalCreatedAt = null,
+      sourceMetadata = null,
+      syncedAt = null,
+      createdAt = null,
     } = data;
 
     const result = await query(
       `INSERT INTO calls (
         user_id, call_sid, recording_sid, caller_number, caller_name,
-        recording_url, status, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+        transcript, analysis, recording_url, recording_path, status,
+        duration, source, external_id, external_created_at, source_metadata,
+        synced_at, created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, $4, $5,
+        NULL, NULL, $6, $7, $8,
+        NULL, $9, $10, $11, $12,
+        $13, COALESCE($14, NOW()), NOW()
+      )
       RETURNING *`,
-      [userId, callSid, recordingSid, callerNumber, callerName, recordingUrl, status]
+      [
+        userId,
+        callSid,
+        recordingSid,
+        callerNumber,
+        callerName,
+        recordingUrl,
+        recordingPath,
+        status,
+        source,
+        externalId,
+        externalCreatedAt,
+        sourceMetadata ?? null,
+        syncedAt,
+        createdAt,
+      ]
     );
 
     return this.mapRowToCall(result.rows[0]);
@@ -66,10 +95,10 @@ export class Call {
     if (status) {
       sql += ' AND status = $2';
       params.push(status);
-      sql += ' ORDER BY created_at DESC LIMIT $3 OFFSET $4';
+      sql += ' ORDER BY COALESCE(external_created_at, created_at) DESC LIMIT $3 OFFSET $4';
       params.push(limit, offset);
     } else {
-      sql += ' ORDER BY created_at DESC LIMIT $2 OFFSET $3';
+      sql += ' ORDER BY COALESCE(external_created_at, created_at) DESC LIMIT $2 OFFSET $3';
       params.push(limit, offset);
     }
 
@@ -86,6 +115,12 @@ export class Call {
       'processedAt',
       'recordingUrl',
       'recordingSid',
+      'recordingPath',
+      'source',
+      'externalId',
+      'externalCreatedAt',
+      'sourceMetadata',
+      'syncedAt',
     ];
 
     const fields = [];
@@ -98,6 +133,11 @@ export class Call {
         const dbKey = key === 'processedAt' ? 'processed_at' 
                    : key === 'recordingUrl' ? 'recording_url'
                    : key === 'recordingSid' ? 'recording_sid'
+                   : key === 'recordingPath' ? 'recording_path'
+                   : key === 'externalId' ? 'external_id'
+                   : key === 'externalCreatedAt' ? 'external_created_at'
+                   : key === 'sourceMetadata' ? 'source_metadata'
+                   : key === 'syncedAt' ? 'synced_at'
                    : key;
         fields.push(`${dbKey} = $${paramIndex}`);
         values.push(value);
@@ -191,6 +231,34 @@ export class Call {
     };
   }
 
+  static async findBySourceAndExternalId(source, externalId) {
+    if (!externalId) return null;
+    const result = await query(
+      'SELECT * FROM calls WHERE source = $1 AND external_id = $2 LIMIT 1',
+      [source, externalId]
+    );
+    if (result.rows.length === 0) {
+      return null;
+    }
+    return this.mapRowToCall(result.rows[0]);
+  }
+
+  static async findLatestBySource(userId, source) {
+    const result = await query(
+      `SELECT * FROM calls 
+       WHERE user_id = $1 AND source = $2 
+       ORDER BY COALESCE(external_created_at, created_at) DESC 
+       LIMIT 1`,
+      [userId, source]
+    );
+
+    if (result.rows.length === 0) {
+      return null;
+    }
+
+    return this.mapRowToCall(result.rows[0]);
+  }
+
   static mapRowToCall(row) {
     return {
       id: row.id,
@@ -202,12 +270,45 @@ export class Call {
       transcript: row.transcript,
       analysis: row.analysis,
       recordingUrl: row.recording_url,
+      recordingPath: row.recording_path,
       status: row.status,
       duration: row.duration,
+      source: row.source || CALL_SOURCE.TWILIO,
+      externalId: row.external_id,
+      externalCreatedAt: row.external_created_at ? row.external_created_at.toISOString() : null,
+      sourceMetadata: row.source_metadata || null,
+      syncedAt: row.synced_at ? row.synced_at.toISOString() : null,
       createdAt: row.created_at.toISOString(),
       updatedAt: row.updated_at.toISOString(),
       processedAt: row.processed_at ? row.processed_at.toISOString() : null,
     };
+  }
+
+  /**
+   * Delete a single call by ID
+   */
+  static async delete(id) {
+    const result = await query(
+      'DELETE FROM calls WHERE id = $1 RETURNING id',
+      [id]
+    );
+    return result.rows.length > 0;
+  }
+
+  /**
+   * Bulk delete calls by IDs
+   */
+  static async bulkDelete(ids) {
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return 0;
+    }
+    
+    const placeholders = ids.map((_, index) => `$${index + 1}`).join(',');
+    const result = await query(
+      `DELETE FROM calls WHERE id IN (${placeholders}) RETURNING id`,
+      ids
+    );
+    return result.rows.length;
   }
 }
 

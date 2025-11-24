@@ -8,7 +8,8 @@ CREATE TABLE IF NOT EXISTS users (
   subscription_tier VARCHAR(50) DEFAULT 'free',
   stripe_customer_id VARCHAR(255),
   stripe_subscription_id VARCHAR(255),
-  timezone VARCHAR(100) DEFAULT 'UTC'
+  timezone VARCHAR(100) DEFAULT 'UTC',
+  freepbx_settings JSONB
 );
 
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
@@ -24,8 +25,14 @@ CREATE TABLE IF NOT EXISTS calls (
   transcript TEXT,
   analysis TEXT,
   recording_url TEXT,
+  recording_path TEXT,
   status VARCHAR(50) DEFAULT 'pending',
   duration INTEGER,
+  source VARCHAR(50) DEFAULT 'twilio',
+  external_id VARCHAR(255),
+  external_created_at TIMESTAMP,
+  source_metadata JSONB,
+  synced_at TIMESTAMP,
   created_at TIMESTAMP DEFAULT NOW(),
   updated_at TIMESTAMP DEFAULT NOW(),
   processed_at TIMESTAMP
@@ -35,6 +42,8 @@ CREATE INDEX IF NOT EXISTS idx_calls_user_id ON calls(user_id);
 CREATE INDEX IF NOT EXISTS idx_calls_created_at ON calls(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 CREATE INDEX IF NOT EXISTS idx_calls_call_sid ON calls(call_sid);
+CREATE INDEX IF NOT EXISTS idx_calls_source ON calls(source);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_calls_source_external ON calls(source, external_id) WHERE external_id IS NOT NULL;
 
 -- Call Metadata Table
 CREATE TABLE IF NOT EXISTS call_metadata (

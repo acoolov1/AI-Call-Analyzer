@@ -5,6 +5,11 @@ export const CALL_STATUS = {
   FAILED: 'failed',
 };
 
+export const CALL_SOURCE = {
+  TWILIO: 'twilio',
+  FREEPBX: 'freepbx',
+};
+
 export const SENTIMENT = {
   POSITIVE: 'positive',
   NEGATIVE: 'negative',

@@ -33,6 +33,7 @@ This is a **modern full-stack application** with separated frontend and backend:
 - PostgreSQL database (or Supabase account)
 - Twilio account with phone number
 - OpenAI API key
+- *(Optional)* FreePBX/Asterisk instance with ARI enabled (tested on FreePBX **16.0.41.1** / Asterisk **16.25.0**)
 
 ### Setup
 
@@ -120,6 +121,17 @@ OPENAI_API_KEY=...
 # Server
 PORT=3000
 NODE_ENV=development
+
+# FreePBX (optional)
+FREEPBX_ENABLED=false
+FREEPBX_HOST=
+FREEPBX_PORT=8089
+FREEPBX_USERNAME=
+FREEPBX_PASSWORD=
+FREEPBX_TLS=true
+FREEPBX_TLS_REJECT_UNAUTHORIZED=false
+FREEPBX_SYNC_INTERVAL_MINUTES=10
+FREEPBX_DEFAULT_USER_ID=<defaults to DEFAULT_USER_ID>
 ```
 
 ### Frontend (.env.local)
@@ -147,6 +159,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 - ✅ **Searchable call history**
 - ✅ **Dashboard with analytics**
 - ✅ **Responsive design** (mobile-friendly)
+- ✅ **FreePBX ingestion** alongside Twilio (scheduled + manual sync button)
 
 ---
 
@@ -204,8 +217,32 @@ All API routes (except webhooks) require authentication via NextAuth session.
 - `GET /api/stats` - Get analytics stats
 - `POST /webhooks/recording-status` - Twilio webhook
 - `GET /audio/:id` - Stream call recording
+- `GET /api/v1/integrations/freepbx/status` - Current FreePBX sync state + settings
+- `POST /api/v1/integrations/freepbx/test` - Test ARI credentials reachability
+- `POST /api/v1/integrations/freepbx/sync` - Kick off manual FreePBX recording sync
 
 See `/backend/src/routes/` for full API specification.
+
+---
+
+## 🔁 FreePBX Integration Workflow
+
+1. **Backend configuration**
+   - Set `FREEPBX_*` variables in `backend/.env` *or*
+   - Use the frontend UI (Settings ▸ FreePBX) to store host/port/credentials per user.
+2. **Enable ARI on FreePBX**
+   - Create a dedicated user in `ari.conf` (read-only is sufficient for recordings).
+   - Ensure the ARI port (8088/8089) is accessible from the backend.
+3. **Connect via UI**
+   - Navigate to **Settings ▸ FreePBX Integration**, fill in host, port, username, and password, then click **Save settings**.
+   - Use **Test Connection** to verify credentials are valid.
+4. **Ingest recordings**
+   - Automatic background sync runs every `FREEPBX_SYNC_INTERVAL_MINUTES`.
+   - On the **Interactions** page click **Sync FreePBX** to trigger a manual fetch.
+   - FreePBX calls show the `FreePBX` badge in the caller column and can be expanded to listen/transcribe just like Twilio entries.
+5. **Manual verification**
+   - Record a call in FreePBX, press **Sync FreePBX**, and verify the call appears with audio and transcription.
+   - Query `/api/v1/integrations/freepbx/status` to inspect last-run metadata if debugging.
 
 ---
 

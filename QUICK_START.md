@@ -9,6 +9,7 @@ Get up and running in 5 minutes.
 - Redis (optional, for background jobs)
 - Twilio account
 - OpenAI API key
+- *(Optional)* FreePBX/Asterisk box with ARI enabled (tested on FreePBX 16.0.41.1 / Asterisk 16.25.0)
 
 ## 1. Install Dependencies ✅
 
@@ -38,6 +39,14 @@ TWILIO_AUTH_TOKEN=your-token
 OPENAI_API_KEY=your-key
 JWT_SECRET=$(openssl rand -base64 32)
 FRONTEND_URL=http://localhost:3001
+
+# FreePBX (optional)
+FREEPBX_ENABLED=false
+FREEPBX_HOST=
+FREEPBX_PORT=8089
+FREEPBX_USERNAME=
+FREEPBX_PASSWORD=
+FREEPBX_TLS=true
 ```
 
 ### Minimum Required for Frontend `.env.local`:
@@ -81,6 +90,13 @@ npm run dev
 - Frontend: http://localhost:3001
 - Backend API: http://localhost:3000
 - Health Check: http://localhost:3000/health
+
+## 7. Configure FreePBX (Optional)
+1. Enable an ARI user inside FreePBX (`/etc/asterisk/ari.conf`).
+2. Go to **Settings ▸ FreePBX** inside the dashboard.
+3. Enter host, port, username, and password, then click **Save**.
+4. Press **Test Connection** to confirm reachability.
+5. Use the **Sync FreePBX** button on the **Interactions** page to pull recordings immediately.
 
 ## That's It! 🎉
 

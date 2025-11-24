@@ -28,6 +28,19 @@ export class User {
     return this.mapRowToUser(result.rows[0]);
   }
 
+  static async getFreePbxSettingsRaw(id) {
+    const result = await query(
+      'SELECT freepbx_settings FROM users WHERE id = $1',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      throw new NotFoundError('User');
+    }
+
+    return result.rows[0].freepbx_settings || null;
+  }
+
   static async create(data) {
     const {
       id,
@@ -56,6 +69,7 @@ export class User {
       'stripe_subscription_id',
       'timezone',
       'twilio_settings',
+      'freepbx_settings',
     ];
 
     const fields = [];
@@ -67,11 +81,12 @@ export class User {
                    key === 'stripeCustomerId' ? 'stripe_customer_id' :
                    key === 'stripeSubscriptionId' ? 'stripe_subscription_id' :
                    key === 'twilioSettings' ? 'twilio_settings' :
+                   key === 'freepbxSettings' ? 'freepbx_settings' :
                    key;
 
       if (allowedFields.includes(dbKey)) {
         // Handle JSONB fields
-        if (dbKey === 'twilio_settings' && typeof value === 'object') {
+        if ((dbKey === 'twilio_settings' || dbKey === 'freepbx_settings') && typeof value === 'object') {
           fields.push(`${dbKey} = $${paramIndex}::jsonb`);
           values.push(JSON.stringify(value));
         } else {
@@ -120,6 +135,27 @@ export class User {
       recordingMode: 'record-from-answer',
     };
 
+    const rawFreePbx = row.freepbx_settings || {};
+    const defaultFreePbxSettings = {
+      enabled: false,
+      host: '',
+      port: 8089,
+      username: '',
+      tls: true,
+      syncIntervalMinutes: 10,
+      hasPassword: false,
+    };
+
+    const sanitizedFreePbx = {
+      enabled: Boolean(rawFreePbx.enabled),
+      host: rawFreePbx.host || '',
+      port: rawFreePbx.port || 8089,
+      username: rawFreePbx.username || '',
+      tls: rawFreePbx.tls !== false,
+      syncIntervalMinutes: rawFreePbx.syncIntervalMinutes || 10,
+      hasPassword: Boolean(rawFreePbx.password),
+    };
+
     return {
       id: row.id,
       email: row.email,
@@ -130,6 +166,10 @@ export class User {
       stripeSubscriptionId: row.stripe_subscription_id,
       timezone: row.timezone || 'UTC',
       twilioSettings: row.twilio_settings || defaultTwilioSettings,
+      freepbxSettings: {
+        ...defaultFreePbxSettings,
+        ...sanitizedFreePbx,
+      },
     };
   }
 }

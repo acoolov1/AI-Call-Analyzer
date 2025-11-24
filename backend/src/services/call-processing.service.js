@@ -1,30 +1,53 @@
 import path from 'path';
 import { TwilioService } from './twilio.service.js';
+import { FreePbxService } from './freepbx.service.js';
 import { OpenAIService } from './openai.service.js';
 import { Call } from '../models/Call.js';
 import { query } from '../config/database.js';
-import { CALL_STATUS } from '../utils/constants.js';
+import { CALL_SOURCE, CALL_STATUS } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 
 export class CallProcessingService {
   /**
    * Process a call recording: download, transcribe, and analyze
    */
-  static async processRecording(callId, recordingUrl) {
+  static async processRecording(callId, options = {}) {
     const tempFilePath = path.join(process.cwd(), `temp-recording-${callId}.wav`);
 
     console.log(`\n🎬 Starting call processing for call ID: ${callId}`);
-    console.log(`📼 Recording URL: ${recordingUrl}\n`);
+    if (options.recordingUrl) {
+      console.log(`📼 Recording URL override supplied: ${options.recordingUrl}`);
+    }
+    if (options.recordingPath) {
+      console.log(`📁 Recording path override supplied: ${options.recordingPath}`);
+    }
 
     try {
+      const call = options.call || await Call.findById(callId);
+      const source = options.source || call.source || CALL_SOURCE.TWILIO;
+      const recordingUrl = options.recordingUrl || call.recordingUrl;
+      const recordingPath = options.recordingPath || call.recordingPath;
+      const freepbxSettings = options.freepbxSettings;
+
       // Update status to processing
       console.log('📊 Updating status to processing...');
       await Call.update(callId, null, { status: CALL_STATUS.PROCESSING });
 
       // Download recording
       console.log('⬇️  Downloading recording...');
-      logger.info({ callId, recordingUrl }, 'Downloading recording');
-      const audioBuffer = await TwilioService.downloadRecording(recordingUrl);
+      logger.info({ callId, source, recordingUrl, recordingPath }, 'Downloading recording');
+      let audioBuffer;
+      if (source === CALL_SOURCE.FREEPBX) {
+        if (!recordingPath && !recordingUrl) {
+          throw new Error('FreePBX recording reference missing');
+        }
+        audioBuffer = await FreePbxService.downloadRecording(recordingPath || recordingUrl, freepbxSettings);
+      } else {
+        if (!recordingUrl) {
+          throw new Error('Recording URL missing for call');
+        }
+        audioBuffer = await TwilioService.downloadRecording(recordingUrl);
+      }
       console.log(`✅ Downloaded ${audioBuffer.length} bytes`);
 
       // Transcribe

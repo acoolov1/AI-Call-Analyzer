@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { useCalls } from '@/hooks/use-calls'
+import { useCalls, useFreepbxStatus, useFreepbxSync, useDeleteCall, useBulkDeleteCalls } from '@/hooks/use-calls'
 import { useUser } from '@/hooks/use-user'
 import { useSession } from 'next-auth/react'
 import { redirect } from 'next/navigation'
@@ -13,13 +13,96 @@ import { debugTimezoneConversion } from '@/lib/timezone-debug'
 export default function CallsPage() {
   const { data: session, status } = useSession()
   const { data: user } = useUser()
-  const { data: calls, isLoading } = useCalls({ limit: 100 })
+  const { data: calls, isLoading, refetch: refetchCalls } = useCalls({ limit: 100 })
+  const { data: freepbxStatus, isLoading: isFreepbxStatusLoading } = useFreepbxStatus()
+  const syncMutation = useFreepbxSync()
   const [searchQuery, setSearchQuery] = useState('')
   const [searchFocused, setSearchFocused] = useState(false)
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set())
   const [playingAudio, setPlayingAudio] = useState<string | null>(null)
   const audioRefs = useRef<{ [key: string]: HTMLAudioElement }>({})
   const [audioTimes, setAudioTimes] = useState<{ [key: string]: { current: number, duration: number } }>({})
+  const [syncMessage, setSyncMessage] = useState<string | null>(null)
+  const [selectedCalls, setSelectedCalls] = useState<Set<string>>(new Set())
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleteTarget, setDeleteTarget] = useState<string | string[] | null>(null)
+  
+  const deleteMutation = useDeleteCall()
+  const bulkDeleteMutation = useBulkDeleteCalls()
+
+  const getSourceMetadata = (call: any): Record<string, any> => {
+    if (!call?.sourceMetadata) return {}
+    if (typeof call.sourceMetadata === 'string') {
+      try {
+        return JSON.parse(call.sourceMetadata)
+      } catch {
+        return {}
+      }
+    }
+    return call.sourceMetadata
+  }
+
+  const cleanCallerString = (value?: string | null): string | null => {
+    if (value === undefined || value === null) return null
+    const strValue = typeof value === 'string' ? value : String(value)
+    const trimmed = strValue.trim()
+    return trimmed.length ? trimmed : null
+  }
+
+  const cleanCallerNumber = (value?: string | null): string | null => {
+    if (value === undefined || value === null) return null
+    const strValue = typeof value === 'string' ? value : String(value)
+    const angleMatch = strValue.match(/<([^>]+)>/)
+    if (angleMatch?.[1]) {
+      return angleMatch[1]
+    }
+    const digitsOnly = strValue.replace(/[^\d+]/g, '')
+    if (digitsOnly.length >= 6 && digitsOnly.length <= 15) {
+      return digitsOnly
+    }
+    const trimmed = strValue.trim()
+    return trimmed.length ? trimmed : null
+  }
+
+  const extractNumberFromRecordingName = (name?: string | null): string | null => {
+    if (!name) return null
+    const match = name.match(/(?:out|in|exten)-(\d{6,15})-/i)
+    if (match?.[1]) {
+      return match[1]
+    }
+    return null
+  }
+
+  const getDisplayCallerName = (call: any): string | null => {
+    const metadata = getSourceMetadata(call)
+    return cleanCallerString(
+      call?.callerName ||
+      metadata.caller_name ||
+      metadata.calleridname ||
+      metadata.callerid_name ||
+      metadata.orig_caller_id_name ||
+      metadata.origcallername ||
+      metadata.cid_name ||
+      metadata.callerid
+    )
+  }
+
+  const getDisplayCallerNumber = (call: any): string | null => {
+    const metadata = getSourceMetadata(call)
+    return (
+      cleanCallerNumber(
+        call?.callerNumber ||
+        metadata.caller_number ||
+        metadata.calleridnum ||
+        metadata.callerid ||
+        metadata.original_caller_id_number ||
+        metadata.orig_caller_id_num ||
+        metadata.cid_num ||
+        metadata.connectedlinenum
+      ) ||
+      extractNumberFromRecordingName(call?.recordingPath || metadata.name || call?.recordingSid)
+    )
+  }
 
   // Debug user timezone
   useEffect(() => {
@@ -44,11 +127,69 @@ export default function CallsPage() {
   const filteredCalls = calls?.filter(call => {
     if (!searchQuery.trim()) return true
     const query = searchQuery.toLowerCase()
-    const caller = `${call.callerName || ''} ${call.callerNumber}`.toLowerCase()
+    const callerName = getDisplayCallerName(call)?.toLowerCase() || ''
+    const callerNumber = getDisplayCallerNumber(call)?.toLowerCase() || ''
+    const caller = `${callerName} ${callerNumber}`.trim()
     const transcript = call.transcript?.toLowerCase() || ''
     const analysis = call.analysis?.toLowerCase() || ''
     return caller.includes(query) || transcript.includes(query) || analysis.includes(query)
   }) || []
+
+  const toggleSelectCall = (callId: string) => {
+    setSelectedCalls(prev => {
+      const next = new Set(prev)
+      if (next.has(callId)) {
+        next.delete(callId)
+      } else {
+        next.add(callId)
+      }
+      return next
+    })
+  }
+
+  const toggleSelectAll = () => {
+    if (selectedCalls.size === filteredCalls.length) {
+      setSelectedCalls(new Set())
+    } else {
+      setSelectedCalls(new Set(filteredCalls.map(c => c.id)))
+    }
+  }
+
+  const handleBulkDeleteClick = () => {
+    if (selectedCalls.size === 0) return
+    setDeleteTarget(Array.from(selectedCalls))
+    setShowDeleteConfirm(true)
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
+
+    try {
+      if (Array.isArray(deleteTarget)) {
+        await bulkDeleteMutation.mutateAsync(deleteTarget)
+        setSelectedCalls(new Set())
+      } else {
+        await deleteMutation.mutateAsync(deleteTarget)
+        setSelectedCalls(prev => {
+          const next = new Set(prev)
+          next.delete(deleteTarget)
+          return next
+        })
+      }
+      // Force refetch to update UI immediately
+      await refetchCalls()
+    } catch (error) {
+      console.error('Delete failed:', error)
+    } finally {
+      setShowDeleteConfirm(false)
+      setDeleteTarget(null)
+    }
+  }
+
+  const cancelDelete = () => {
+    setShowDeleteConfirm(false)
+    setDeleteTarget(null)
+  }
 
   const toggleRow = (rowId: string) => {
     setExpandedRows(prev => {
@@ -140,6 +281,29 @@ export default function CallsPage() {
     })
   }
 
+  const handleManualSync = () => {
+    setSyncMessage(null)
+    syncMutation.mutate(undefined, {
+      onSuccess: () => {
+        setSyncMessage('FreePBX sync started. New calls will appear shortly.')
+      },
+      onError: (error: any) => {
+        const msg = error?.response?.data?.message || 'Failed to start FreePBX sync.'
+        setSyncMessage(msg)
+      },
+      onSettled: () => {
+        setTimeout(() => setSyncMessage(null), 4000)
+      },
+    })
+  }
+
+  const renderSourceBadge = (source?: string) => {
+    if (!source || source === 'twilio') {
+      return <span className="source-badge source-twilio">Twilio</span>
+    }
+    return <span className="source-badge source-freepbx">FreePBX</span>
+  }
+
   return (
     <DashboardLayout>
       <div className="app-container">
@@ -148,6 +312,28 @@ export default function CallsPage() {
             <h1 className="header-title">Interactions</h1>
             <p className="header-subtitle">View and manage your call interactions • {filteredCalls.length} calls</p>
           </div>
+          {freepbxStatus?.freepbxSettings?.enabled && (
+            <div className="sync-panel">
+              <div className="sync-meta">
+                <span className="sync-label">FreePBX</span>
+                <span className="sync-value">
+                  {isFreepbxStatusLoading
+                    ? 'Checking status...'
+                    : freepbxStatus?.lastRun?.at
+                      ? `Last sync ${new Date(freepbxStatus.lastRun.at).toLocaleString()}`
+                      : 'No syncs yet'}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="sync-btn"
+                onClick={handleManualSync}
+                disabled={syncMutation.isPending}
+              >
+                {syncMutation.isPending ? 'Syncing...' : 'Sync FreePBX'}
+              </button>
+            </div>
+          )}
           <div className="search-wrapper">
             <div className={`search-container ${searchFocused ? 'focused' : ''}`}>
               <svg className="search-icon" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
@@ -172,16 +358,28 @@ export default function CallsPage() {
               )}
             </div>
           </div>
-          {filteredCalls.length > 0 && (
-            <div className="column-headers">
-              <div className="header-cell cell-expand"></div>
-              <div className="header-cell cell-caller">Caller</div>
-              <div className="header-cell cell-date">Date & Time</div>
-              <div className="header-cell cell-summary">Summary</div>
-              <div className="header-cell cell-sentiment">Sentiment</div>
-              <div className="header-cell cell-actions">Action Items</div>
-              <div className="header-cell cell-urgent">Urgent Topics</div>
-              <div className="header-cell cell-audio">Listen</div>
+          {syncMessage && (
+            <div className="sync-message">
+              {syncMessage}
+            </div>
+          )}
+
+          {selectedCalls.size > 0 && (
+            <div className="bulk-actions-toolbar">
+              <span className="selected-count">{selectedCalls.size} selected</span>
+              <button 
+                onClick={handleBulkDeleteClick}
+                className="btn-delete-bulk"
+                disabled={bulkDeleteMutation.isPending}
+              >
+                {bulkDeleteMutation.isPending ? 'Deleting...' : 'Delete Selected'}
+              </button>
+              <button 
+                onClick={() => setSelectedCalls(new Set())}
+                className="btn-cancel"
+              >
+                Cancel
+              </button>
             </div>
           )}
         </div>
@@ -196,6 +394,25 @@ export default function CallsPage() {
         ) : (
           <div className="table-wrapper">
             <table className="data-table">
+              <thead>
+                <tr>
+                  <th className="header-cell cell-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={filteredCalls.length > 0 && selectedCalls.size === filteredCalls.length}
+                      onChange={toggleSelectAll}
+                      className="checkbox-select-all"
+                    />
+                  </th>
+                  <th className="header-cell cell-expand"></th>
+                  <th className="header-cell cell-caller">Caller</th>
+                  <th className="header-cell cell-date">Date & Time</th>
+                  <th className="header-cell cell-summary">Summary</th>
+                  <th className="header-cell cell-sentiment">Sentiment</th>
+                  <th className="header-cell cell-actions">Action Items</th>
+                  <th className="header-cell cell-urgent">Urgent Topics</th>
+                </tr>
+              </thead>
               <tbody>
                 {filteredCalls.map((call, index) => {
                   const rowId = `row-${index}`
@@ -203,8 +420,10 @@ export default function CallsPage() {
                   const parsed = parseAnalysis(call.analysis)
                   const sentimentBadge = getSentimentBadge(parsed.sentiment)
                   const hasUrgent = hasUrgentTopics(parsed.urgentTopics)
+                  const displayCallerName = getDisplayCallerName(call)
+                  const displayCallerNumber = getDisplayCallerNumber(call)
                   const displayCaller = call.callerName 
-                    ? `${call.callerName} (${call.callerNumber})` 
+                    ? `${call.callerName} ${call.callerNumber}` 
                     : call.callerNumber
                   
                   // Debug first call only
@@ -229,11 +448,19 @@ export default function CallsPage() {
                     <>
                       <tr
                         key={call.id}
-                        className={`data-row ${isExpanded ? 'expanded' : ''}`}
+                        className={`data-row ${isExpanded ? 'expanded' : ''} ${selectedCalls.has(call.id) ? 'selected' : ''}`}
                         data-row-id={rowId}
                         onClick={() => toggleRow(rowId)}
                         style={{ cursor: 'pointer' }}
                       >
+                        <td className="cell-checkbox" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={selectedCalls.has(call.id)}
+                            onChange={() => toggleSelectCall(call.id)}
+                            className="checkbox-select"
+                          />
+                        </td>
                         <td className="cell-expand">
                       <button
                             className="expand-row-btn"
@@ -258,7 +485,13 @@ export default function CallsPage() {
                       </button>
                     </td>
                         <td className="cell-caller">
-                          <div className="cell-content">{displayCaller}</div>
+                          <div className="caller-info">
+                            {displayCallerName && <div className="caller-name">{displayCallerName}</div>}
+                            <div className="caller-number">{displayCallerNumber || 'Unknown number'}</div>
+                            <div className="caller-source">
+                              {renderSourceBadge(call.source)}
+                            </div>
+                          </div>
                         </td>
                         <td className="cell-date">
                           <div className="cell-content">{formatDate}</div>
@@ -276,43 +509,6 @@ export default function CallsPage() {
                         </td>
                         <td className="cell-urgent">
                           <div className="cell-content">{createPreview(hasUrgent ? parsed.urgentTopics : 'None', 50)}</div>
-                        </td>
-                        <td className="cell-audio">
-                          <div className="cell-content">
-                            {call.recordingUrl ? (
-                              <>
-                                <button
-                                  className={`audio-play-btn ${playingAudio === call.id ? 'playing' : ''}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation()
-                                    toggleAudio(call.id)
-                                  }}
-                                  aria-label="Play audio"
-                                >
-                                  {playingAudio === call.id ? (
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                      <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
-                                    </svg>
-                                  ) : (
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                      <path d="M8 5v14l11-7z"/>
-                                    </svg>
-                                  )}
-                                </button>
-                                <audio
-                                  ref={(el) => {
-                                    if (el) audioRefs.current[call.id] = el
-                                  }}
-                                  preload="none"
-                                  onEnded={() => handleAudioEnded(call.id)}
-                                >
-                                  <source src={`/api/audio/${call.id}`} type="audio/wav" />
-                                </audio>
-                              </>
-                            ) : (
-                              <span className="no-audio">—</span>
-                            )}
-                          </div>
                         </td>
                   </tr>
                       {isExpanded && (
@@ -347,9 +543,9 @@ export default function CallsPage() {
                                   </div>
                                 </div>
                               )}
-                              {call.recordingUrl && (
+                              {(call.recordingUrl || call.recordingPath) && (
                                 <div className="detail-section">
-                                  <div className="detail-label">Audio Recording</div>
+                                  <div className="detail-label">Listen</div>
                                   <div className="detail-value">
                                     <div className="audio-player-container">
                                       <button
@@ -421,6 +617,33 @@ export default function CallsPage() {
         )}
       </div>
 
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="modal-overlay" onClick={cancelDelete}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <h3 className="modal-title">Confirm Delete</h3>
+            <p className="modal-message">
+              {Array.isArray(deleteTarget) 
+                ? `Are you sure you want to delete ${deleteTarget.length} call(s)? This action cannot be undone.`
+                : 'Are you sure you want to delete this call? This action cannot be undone.'
+              }
+            </p>
+            <div className="modal-actions">
+              <button onClick={cancelDelete} className="btn-modal-cancel">
+                Cancel
+              </button>
+              <button 
+                onClick={confirmDelete} 
+                className="btn-modal-delete"
+                disabled={deleteMutation.isPending || bulkDeleteMutation.isPending}
+              >
+                {(deleteMutation.isPending || bulkDeleteMutation.isPending) ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <style jsx>{`
         .app-container {
           width: 100%;
@@ -446,6 +669,60 @@ export default function CallsPage() {
           padding-top: 0;
           margin-bottom: 32px;
         }
+
+        .sync-panel {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          border: 1px solid #e9e9e7;
+          border-radius: 6px;
+          padding: 12px 16px;
+          margin-bottom: 16px;
+          background: #f9f9f7;
+          gap: 16px;
+        }
+
+        .sync-meta {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .sync-label {
+          font-size: 11px;
+          font-weight: 600;
+          color: #787774;
+          letter-spacing: 0.4px;
+          text-transform: uppercase;
+        }
+
+        .sync-value {
+          font-size: 12px;
+          color: #37352f;
+        }
+
+        .sync-btn {
+          border: 1px solid #d7d5d1;
+          background: #ffffff;
+          padding: 8px 14px;
+          border-radius: 6px;
+          font-size: 12px;
+          font-weight: 500;
+          cursor: pointer;
+          color: #37352f;
+          min-width: 120px;
+        }
+
+        .sync-btn:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
+        .sync-message {
+          margin-top: 8px;
+          font-size: 12px;
+          color: #37352f;
+        }
         
         .header-title {
           font-size: 17px;
@@ -467,15 +744,6 @@ export default function CallsPage() {
           margin-bottom: 20px;
         }
         
-        .column-headers {
-          display: flex;
-          align-items: center;
-          padding: 12px 0 0 0;
-          border-top: 1px solid #e9e9e7;
-          margin-top: 16px;
-          background: #ffffff;
-        }
-        
         .header-cell {
           padding: 10px 16px;
           font-weight: 600;
@@ -484,60 +752,12 @@ export default function CallsPage() {
           text-transform: uppercase;
           letter-spacing: 0.4px;
           white-space: nowrap;
-          flex-shrink: 0;
           text-align: left;
           line-height: 1.4;
+          background: #ffffff;
+          border-bottom: 1px solid #e9e9e7;
         }
-        
-        .header-cell.cell-expand {
-          width: 48px;
-          padding: 10px 12px;
-          flex-shrink: 0;
-          text-align: center;
-        }
-        
-        .header-cell.cell-caller {
-          width: 240px;
-          min-width: 240px;
-          max-width: 240px;
-        }
-        
-        .header-cell.cell-date {
-          width: 180px;
-          min-width: 180px;
-          max-width: 180px;
-        }
-        
-        .header-cell.cell-summary {
-          min-width: 280px;
-          max-width: 400px;
-          flex: 1;
-        }
-        
-        .header-cell.cell-sentiment {
-          width: 110px;
-          min-width: 110px;
-          max-width: 110px;
-        }
-        
-        .header-cell.cell-actions {
-          min-width: 220px;
-          max-width: 320px;
-          flex: 1;
-        }
-        
-        .header-cell.cell-urgent {
-          min-width: 180px;
-          max-width: 280px;
-          flex: 1;
-        }
-        
-        .header-cell.cell-audio {
-          width: 140px;
-          min-width: 140px;
-          max-width: 140px;
-        }
-        
+
         .search-container {
           display: flex;
           align-items: center;
@@ -549,7 +769,6 @@ export default function CallsPage() {
           transition: all 0.18s ease;
           box-shadow: inset 0 0 0 1px transparent;
         }
-        
         
         .search-container:hover {
           background: #ffffff;
@@ -681,9 +900,12 @@ export default function CallsPage() {
           background: #fafafa;
         }
         
+        /* Shared Column Widths for TH and TD */
         .cell-expand {
           width: 48px;
-          padding: 14px 12px !important;
+          min-width: 48px;
+          padding-left: 12px !important;
+          padding-right: 12px !important;
           text-align: center;
         }
         
@@ -715,7 +937,7 @@ export default function CallsPage() {
         
         .cell-content {
           color: #37352f;
-          font-size: 14px;
+          font-size: 12px;
           line-height: 1.5;
           word-wrap: break-word;
           overflow: hidden;
@@ -728,22 +950,64 @@ export default function CallsPage() {
         .cell-caller {
           width: 240px;
           min-width: 240px;
-          max-width: 300px;
+          max-width: 240px;
         }
         
         .cell-caller .cell-content {
           -webkit-line-clamp: 2;
           font-weight: normal;
           color: #37352f;
-          font-size: 14px;
+          font-size: 12px;
+        }
+        
+        .caller-info {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        
+        .caller-name {
+          font-size: 12px;
+          font-weight: normal;
+          color: #37352f;
+          line-height: 1.4;
+        }
+        
+        .caller-number {
+          font-size: 12px;
+          color: #37352f;
+          line-height: 1.4;
+        }
+
+        .caller-source {
+          margin-top: 4px;
+        }
+
+        .source-badge {
+          display: inline-flex;
+          align-items: center;
+          font-size: 11px;
+          font-weight: 500;
+          padding: 2px 6px;
+          border-radius: 4px;
+          text-transform: uppercase;
+          letter-spacing: 0.3px;
+        }
+
+        .source-twilio {
+          background: rgba(55, 53, 47, 0.08);
+          color: #37352f;
+        }
+
+        .source-freepbx {
+          background: rgba(66, 133, 244, 0.15);
+          color: #1a73e8;
         }
         
         .cell-date {
           width: 180px;
           min-width: 180px;
-          max-width: 200px;
-          color: #787774;
-          font-size: 13px;
+          max-width: 180px;
         }
         
         .cell-date .cell-content {
@@ -752,6 +1016,7 @@ export default function CallsPage() {
           overflow: hidden;
           text-overflow: ellipsis;
           display: block;
+          font-size: 12px;
         }
         
         .cell-summary {
@@ -762,7 +1027,7 @@ export default function CallsPage() {
         .cell-sentiment {
           width: 110px;
           min-width: 110px;
-          max-width: 130px;
+          max-width: 110px;
         }
         
         .cell-sentiment .cell-content {
@@ -783,7 +1048,7 @@ export default function CallsPage() {
         .cell-audio {
           width: 140px;
           min-width: 140px;
-          max-width: 180px;
+          max-width: 140px;
         }
         
         .cell-audio .cell-content {
@@ -796,7 +1061,7 @@ export default function CallsPage() {
           width: 32px;
           height: 32px;
           border-radius: 50%;
-          border: 1px solid #e9e9e7;
+          border: 1px solid #4285f4;
           background: #ffffff;
           display: flex;
           align-items: center;
@@ -805,12 +1070,12 @@ export default function CallsPage() {
           transition: all 0.15s ease;
           padding: 0;
           outline: none;
-          color: #37352f;
+          color: #4285f4;
         }
         
         .audio-play-btn:hover {
-          background: #f7f6f3;
-          border-color: #d1d1cf;
+          background: rgba(66, 133, 244, 0.08);
+          border-color: #4285f4;
         }
         
         .audio-play-btn:active {
@@ -818,8 +1083,8 @@ export default function CallsPage() {
         }
         
         .audio-play-btn.playing {
-          background: #f1f1ef;
-          border-color: #37352f;
+          background: rgba(66, 133, 244, 0.12);
+          border-color: #4285f4;
         }
         
         .audio-play-btn svg {
@@ -856,22 +1121,22 @@ export default function CallsPage() {
           align-items: center;
           gap: 4px;
           font-size: 12px;
-          color: #787774;
+          color: #4285f4;
           font-variant-numeric: tabular-nums;
           min-width: 85px;
         }
         
         .time-current {
-          color: #37352f;
+          color: #4285f4;
           font-weight: 500;
         }
         
         .time-separator {
-          color: #9b9a97;
+          color: #4285f4;
         }
         
         .time-duration {
-          color: #787774;
+          color: #4285f4;
         }
         
         .audio-seek-bar {
@@ -896,13 +1161,13 @@ export default function CallsPage() {
           width: 12px;
           height: 12px;
           border-radius: 50%;
-          background: #37352f;
+          background: #4285f4;
           cursor: pointer;
           transition: all 0.15s ease;
         }
         
         .audio-seek-bar::-webkit-slider-thumb:hover {
-          background: #1a1918;
+          background: #1a73e8;
           transform: scale(1.2);
         }
         
@@ -910,14 +1175,14 @@ export default function CallsPage() {
           width: 12px;
           height: 12px;
           border-radius: 50%;
-          background: #37352f;
+          background: #4285f4;
           border: none;
           cursor: pointer;
           transition: all 0.15s ease;
         }
         
         .audio-seek-bar::-moz-range-thumb:hover {
-          background: #1a1918;
+          background: #1a73e8;
           transform: scale(1.2);
         }
         
@@ -968,7 +1233,7 @@ export default function CallsPage() {
         }
         
         .detail-value {
-          font-size: 14px;
+          font-size: 12px;
           color: #37352f;
           line-height: 1.65;
         }
@@ -981,7 +1246,7 @@ export default function CallsPage() {
         .transcript-text {
           max-height: 350px;
           overflow-y: auto;
-          font-size: 14px;
+          font-size: 12px;
           color: #37352f;
           line-height: 1.65;
           white-space: pre-wrap;
@@ -1022,6 +1287,7 @@ export default function CallsPage() {
           line-height: 1.6;
           display: flex;
           align-items: flex-start;
+          font-size: 12px;
         }
         
         .action-item:last-child {
@@ -1038,7 +1304,7 @@ export default function CallsPage() {
           color: #787774;
           font-weight: normal;
           margin-right: 10px;
-          font-size: 14px;
+          font-size: 12px;
           flex-shrink: 0;
           margin-top: 2px;
         }
@@ -1070,28 +1336,14 @@ export default function CallsPage() {
             font-size: 17px;
           }
           
-          .column-headers {
-            padding: 10px 0 0 0;
-            margin-top: 12px;
-          }
-          
           .header-cell {
             padding: 8px 12px;
             font-size: 10px;
           }
-          
-          .header-cell.cell-expand {
-            width: 44px;
-            padding: 8px 8px;
-          }
-          
-          .header-cell.cell-caller,
-          .header-cell.cell-date,
-          .header-cell.cell-summary,
-          .header-cell.cell-actions,
-          .header-cell.cell-urgent {
-            min-width: 150px;
-            max-width: 200px;
+
+          .sync-panel {
+            flex-direction: column;
+            align-items: flex-start;
           }
           
           .data-table td {
@@ -1101,7 +1353,9 @@ export default function CallsPage() {
           
           .cell-expand {
             width: 44px;
-            padding: 12px 8px !important;
+            min-width: 44px;
+            padding-left: 8px !important;
+            padding-right: 8px !important;
           }
           
           .cell-caller,
@@ -1120,6 +1374,161 @@ export default function CallsPage() {
           .expanded-details {
             grid-template-columns: 1fr;
           }
+        }
+
+        /* Checkbox and selection styles */
+        .cell-checkbox {
+          width: 40px;
+          padding: 12px;
+          text-align: center;
+        }
+
+        .checkbox-select,
+        .checkbox-select-all {
+          width: 16px;
+          height: 16px;
+          cursor: pointer;
+          accent-color: #4285f4;
+        }
+
+        .data-row.selected {
+          background-color: #e8f0fe !important;
+        }
+
+        /* Bulk actions toolbar */
+        .bulk-actions-toolbar {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 12px 16px;
+          background-color: #e8f0fe;
+          border: 1px solid #4285f4;
+          border-radius: 6px;
+          margin-bottom: 16px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+        }
+
+        .selected-count {
+          font-size: 14px;
+          font-weight: 600;
+          color: #1a73e8;
+        }
+
+        .btn-delete-bulk {
+          background-color: #dc3545;
+          color: white;
+          border: none;
+          padding: 8px 16px;
+          border-radius: 4px;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-delete-bulk:hover:not(:disabled) {
+          background-color: #c82333;
+        }
+
+        .btn-delete-bulk:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
+        .btn-cancel {
+          background-color: #f1f1f1;
+          color: #333;
+          border: none;
+          padding: 8px 16px;
+          border-radius: 4px;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-cancel:hover {
+          background-color: #e0e0e0;
+        }
+
+        /* Modal styles */
+        .modal-overlay {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background-color: rgba(0, 0, 0, 0.5);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 10000;
+        }
+
+        .modal-content {
+          background: white;
+          border-radius: 8px;
+          padding: 24px;
+          max-width: 500px;
+          width: 90%;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+        }
+
+        .modal-title {
+          font-size: 20px;
+          font-weight: 600;
+          margin: 0 0 16px 0;
+          color: #333;
+        }
+
+        .modal-message {
+          font-size: 14px;
+          color: #666;
+          margin: 0 0 24px 0;
+          line-height: 1.5;
+        }
+
+        .modal-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 12px;
+        }
+
+        .btn-modal-cancel {
+          background-color: #f1f1f1;
+          color: #333;
+          border: none;
+          padding: 10px 20px;
+          border-radius: 4px;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-modal-cancel:hover {
+          background-color: #e0e0e0;
+        }
+
+        .btn-modal-delete {
+          background-color: #dc3545;
+          color: white;
+          border: none;
+          padding: 10px 20px;
+          border-radius: 4px;
+          font-size: 14px;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .btn-modal-delete:hover:not(:disabled) {
+          background-color: #c82333;
+        }
+
+        .btn-modal-delete:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
         }
       `}</style>
     </DashboardLayout>

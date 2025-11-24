@@ -14,6 +14,11 @@ const optionalEnvVars = {
   NODE_ENV: 'development',
   REDIS_URL: 'redis://localhost:6379',
   FRONTEND_URL: 'http://localhost:3001',
+  FREEPBX_ENABLED: 'false',
+  FREEPBX_PORT: '8089',
+  FREEPBX_TLS: 'true',
+  FREEPBX_TLS_REJECT_UNAUTHORIZED: 'false',
+  FREEPBX_SYNC_INTERVAL_MINUTES: '10',
 };
 
 // Validate required environment variables
@@ -74,6 +79,17 @@ export const config = {
   stripe: {
     secretKey: process.env.STRIPE_SECRET_KEY,
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+  },
+  freepbx: {
+    enabled: process.env.FREEPBX_ENABLED === 'true',
+    host: process.env.FREEPBX_HOST,
+    port: parseInt(process.env.FREEPBX_PORT || '8089', 10),
+    username: process.env.FREEPBX_USERNAME,
+    password: process.env.FREEPBX_PASSWORD,
+    tls: process.env.FREEPBX_TLS !== 'false',
+    rejectUnauthorized: process.env.FREEPBX_TLS_REJECT_UNAUTHORIZED !== 'false',
+    syncIntervalMinutes: parseInt(process.env.FREEPBX_SYNC_INTERVAL_MINUTES || '10', 10) || 10,
+    defaultUserId: process.env.FREEPBX_DEFAULT_USER_ID,
   },
 };
 

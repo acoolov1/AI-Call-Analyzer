@@ -34,7 +34,7 @@ export class UserController {
   static async updatePreferences(req, res, next) {
     try {
       const userId = req.user.id;
-      const { timezone, twilioSettings } = req.body;
+      const { timezone, twilioSettings, freepbxSettings } = req.body;
 
       console.log(`\n⚙️ Updating preferences for user: ${userId}`);
 
@@ -105,12 +105,18 @@ export class UserController {
       if (timezone !== undefined) {
         updates.timezone = timezone;
       }
+
+      let currentUser = null;
+      let rawFreePbxSettings = null;
+      if (twilioSettings !== undefined || freepbxSettings !== undefined) {
+        currentUser = await User.findById(userId);
+      }
+      if (freepbxSettings !== undefined) {
+        rawFreePbxSettings = await User.getFreePbxSettingsRaw(userId);
+      }
+
       if (twilioSettings !== undefined) {
-        // Get current user to merge with existing settings
-        const currentUser = await User.findById(userId);
-        
-        // Ensure we have a valid base object with defaults
-        const baseSettings = currentUser.twilioSettings || {
+        const baseSettings = currentUser?.twilioSettings || {
           forwardingEnabled: true,
           forwardPhoneNumber: '',
           recordingEnabled: true,
@@ -126,6 +132,61 @@ export class UserController {
         updates.twilioSettings = {
           ...baseSettings,
           ...twilioSettings,
+        };
+      }
+
+      if (freepbxSettings !== undefined) {
+        const baseFreePbx = {
+          enabled: false,
+          host: '',
+          port: 8089,
+          username: '',
+          tls: true,
+          password: rawFreePbxSettings?.password,
+          syncIntervalMinutes: 10,
+        };
+
+        const mergedSettings = {
+          ...baseFreePbx,
+          ...freepbxSettings,
+        };
+
+        if (mergedSettings.port < 1 || mergedSettings.port > 65535) {
+          return res.status(400).json({
+            success: false,
+            message: 'port must be between 1 and 65535',
+          });
+        }
+
+        if (mergedSettings.syncIntervalMinutes < 1) {
+          return res.status(400).json({
+            success: false,
+            message: 'syncIntervalMinutes must be at least 1 minute',
+          });
+        }
+
+        let resolvedPassword = baseFreePbx.password;
+        if (typeof freepbxSettings.password === 'string') {
+          resolvedPassword = freepbxSettings.password.length > 0 ? freepbxSettings.password : null;
+        }
+
+        if (mergedSettings.enabled) {
+          if (!mergedSettings.host || !mergedSettings.username || !resolvedPassword) {
+            return res.status(400).json({
+              success: false,
+              message: 'host, username, and password are required when FreePBX is enabled',
+            });
+          }
+        }
+
+        updates.freepbxSettings = {
+          enabled: Boolean(mergedSettings.enabled),
+          host: mergedSettings.host,
+          port: Number(mergedSettings.port),
+          username: mergedSettings.username,
+          tls: mergedSettings.tls !== false,
+          password: resolvedPassword,
+          syncIntervalMinutes: Number(mergedSettings.syncIntervalMinutes),
         };
       }
 

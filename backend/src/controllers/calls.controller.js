@@ -1,5 +1,5 @@
 import { Call } from '../models/Call.js';
-import { NotFoundError } from '../utils/errors.js';
+import { NotFoundError, BadRequestError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
 export class CallsController {
@@ -113,7 +113,12 @@ export class CallsController {
       
       // Queue processing job (will be implemented with background jobs)
       // For now, process synchronously
-      await CallProcessingService.processRecording(call.id, call.recordingUrl);
+      await CallProcessingService.processRecording(call.id, {
+        source: call.source,
+        recordingUrl: call.recordingUrl,
+        recordingPath: call.recordingPath,
+        call,
+      });
 
       const updatedCall = await Call.findById(id, userId);
 
@@ -121,6 +126,87 @@ export class CallsController {
         success: true,
         data: updatedCall,
         message: 'Call processing retried successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * DELETE /api/v1/calls/:id
+   * Delete a single call
+   */
+  static async deleteCall(req, res, next) {
+    try {
+      const { id } = req.params;
+      const userId = req.user.id;
+
+      logger.info({ callId: id, userId }, 'Deleting call');
+
+      // Verify ownership
+      const call = await Call.findById(id);
+      if (!call) {
+        throw new NotFoundError('Call not found');
+      }
+
+      if (call.userId !== userId) {
+        throw new BadRequestError('You do not have permission to delete this call');
+      }
+
+      // Delete the call
+      await Call.delete(id);
+
+      logger.info({ callId: id }, 'Call deleted successfully');
+
+      res.json({
+        success: true,
+        message: 'Call deleted successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * DELETE /api/v1/calls/bulk
+   * Delete multiple calls
+   */
+  static async bulkDeleteCalls(req, res, next) {
+    try {
+      const { callIds } = req.body;
+      const userId = req.user.id;
+
+      if (!Array.isArray(callIds) || callIds.length === 0) {
+        throw new BadRequestError('callIds must be a non-empty array');
+      }
+
+      logger.info({ count: callIds.length, userId }, 'Bulk deleting calls');
+
+      // Verify ownership of all calls
+      const calls = await Promise.all(
+        callIds.map(id => Call.findById(id))
+      );
+
+      const unauthorizedCalls = calls.filter(call => call && call.userId !== userId);
+      if (unauthorizedCalls.length > 0) {
+        throw new BadRequestError('You do not have permission to delete some of these calls');
+      }
+
+      const notFoundCalls = calls.filter(call => !call);
+      if (notFoundCalls.length > 0) {
+        logger.warn({ count: notFoundCalls.length }, 'Some calls not found');
+      }
+
+      // Delete all valid calls
+      const validCallIds = calls.filter(call => call).map(call => call.id);
+      await Call.bulkDelete(validCallIds);
+
+      logger.info({ deleted: validCallIds.length }, 'Bulk delete completed');
+
+      res.json({
+        success: true,
+        message: `${validCallIds.length} call(s) deleted successfully`,
+        deleted: validCallIds.length,
       });
     } catch (error) {
       next(error);

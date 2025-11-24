@@ -9,6 +9,7 @@ import { errorHandler, notFoundHandler } from './middleware/error.middleware.js'
 import { metricsMiddleware, getMetrics } from './middleware/metrics.middleware.js';
 import routes from './routes/index.js';
 import { initializeWorkers, closeQueues } from './jobs/queue.js';
+import { scheduleFreePbxSync } from './jobs/freepbx-sync.job.js';
 
 const app = express();
 
@@ -91,6 +92,8 @@ if (config.redis.url) {
     logger.warn({ error: error.message }, 'Failed to initialize background workers, continuing without them');
   });
 }
+
+scheduleFreePbxSync();
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {

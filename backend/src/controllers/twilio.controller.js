@@ -1,7 +1,7 @@
 import { Call } from '../models/Call.js';
 import { TwilioService } from '../services/twilio.service.js';
 import { CallProcessingService } from '../services/call-processing.service.js';
-import { CALL_STATUS } from '../utils/constants.js';
+import { CALL_SOURCE, CALL_STATUS } from '../utils/constants.js';
 import { logger } from '../utils/logger.js';
 import { config } from '../config/env.js';
 import { query } from '../config/database.js';
@@ -21,11 +21,26 @@ export class TwilioController {
     
     try {
       const callerNumber = req.body.From || req.body.Caller || 'Unknown';
-      const callerName = req.body.FromName || req.body.CallerName || null;
+      let callerName = req.body.FromName || req.body.CallerName || null;
       const callSid = req.body.CallSid;
 
       console.log(`📞 Call SID: ${callSid}`);
       console.log(`📞 Caller: ${callerNumber}`);
+      
+      // Lookup caller name if not provided
+      if (!callerName && callerNumber !== 'Unknown') {
+        console.log('🔍 Looking up caller name...');
+        try {
+          callerName = await TwilioService.lookupCallerName(callerNumber);
+          if (callerName) {
+            console.log(`✅ Found caller name: ${callerName}`);
+          } else {
+            console.log('ℹ️  No caller name found');
+          }
+        } catch (error) {
+          console.log('⚠️  Caller lookup failed:', error.message);
+        }
+      }
       
       logger.info({
         callSid,
@@ -100,6 +115,9 @@ export class TwilioController {
         callerNumber,
         callerName,
         status: CALL_STATUS.PENDING,
+        source: CALL_SOURCE.TWILIO,
+        externalId: callSid,
+        sourceMetadata: req.body,
       });
 
       console.log(`✅ Call record created: ${call.id}`);

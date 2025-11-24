@@ -1,19 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import apiClient from '@/lib/api-client';
-
-// Twilio settings type
-export interface TwilioSettings {
-  forwardingEnabled: boolean;
-  forwardPhoneNumber: string;
-  recordingEnabled: boolean;
-  callTimeout: number;
-  customGreeting: string;
-  playRecordingBeep: boolean;
-  maxRecordingLength: number;
-  finishOnKey: string;
-  afterHoursMessage: string;
-  recordingMode: 'record-from-answer' | 'record-from-ringing' | 'do-not-record';
-}
+import { FreePbxSettings, TwilioSettings } from '@/types/call';
 
 // User type matching backend response
 export interface User {
@@ -26,6 +13,7 @@ export interface User {
   stripeSubscriptionId?: string;
   timezone?: string;
   twilioSettings?: TwilioSettings;
+  freepbxSettings?: FreePbxSettings;
 }
 
 // Fetch current user information
