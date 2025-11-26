@@ -3,18 +3,109 @@ import fs from 'fs';
 import { config } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 
-const openai = new OpenAI({ apiKey: config.openai.apiKey });
-
 export class OpenAIService {
+  /**
+   * Get platform-wide OpenAI settings (from admin user)
+   * This is a platform-level configuration, not per-user
+   */
+  static async getPlatformSettings() {
+    try {
+      const { User } = await import('../models/User.js');
+      
+      // Try to get from the first admin user (you)
+      // For now, use DEFAULT_USER_ID from env as the admin
+      const adminUserId = process.env.DEFAULT_USER_ID || config.freepbx.defaultUserId;
+      
+      if (adminUserId) {
+        const settings = await User.getOpenAISettingsRaw(adminUserId);
+        return settings;
+      }
+      
+      return null;
+    } catch (error) {
+      logger.warn({ error: error.message }, 'Could not fetch platform OpenAI settings');
+      return null;
+    }
+  }
+  /**
+   * Get OpenAI client instance
+   * Uses ONLY platform-wide API key configured by admin in settings
+   * NO FALLBACK - if not configured, transcription will fail
+   */
+  static getClient(openaiSettings = null) {
+    // REQUIRE admin to configure API key in UI settings - NO fallback to env
+    if (!openaiSettings?.api_key) {
+      console.log('❌ OpenAI not configured - Admin must configure API key in /settings/openai');
+      throw new Error('OpenAI is not configured. Administrator must configure API key in settings.');
+    }
+    
+    const apiKey = openaiSettings.api_key;
+    console.log(`✅ Using OpenAI API key from: ADMIN SETTINGS (${apiKey.substring(0, 10)}...)`);
+    logger.info('Using admin-configured OpenAI API key');
+    
+    return new OpenAI({ apiKey });
+  }
+
+  /**
+   * Test OpenAI connection
+   */
+  static async testConnection(openaiSettings) {
+    try {
+      const openai = this.getClient(openaiSettings);
+      
+      // Make a minimal API call to test the connection
+      const response = await openai.models.list();
+      
+      // Check if we got a valid response
+      if (response && response.data) {
+        return {
+          success: true,
+          message: 'Successfully connected to OpenAI API',
+          modelsAvailable: response.data.length,
+        };
+      }
+      
+      throw new Error('Invalid response from OpenAI API');
+    } catch (error) {
+      logger.error({ error: error.message }, 'OpenAI connection test failed');
+      
+      // Handle specific OpenAI error codes
+      let errorMessage = 'Failed to connect to OpenAI';
+      
+      if (error.status === 401) {
+        errorMessage = 'Invalid API key. Please check your OpenAI API key and try again.';
+      } else if (error.status === 429) {
+        errorMessage = 'Rate limit exceeded. Please try again later.';
+      } else if (error.status === 500) {
+        errorMessage = 'OpenAI server error. Please try again later.';
+      } else if (error.message) {
+        errorMessage = `Failed to connect to OpenAI: ${error.message}`;
+      }
+      
+      throw new Error(errorMessage);
+    }
+  }
+
   /**
    * Transcribe audio using Whisper
    */
-  static async transcribeAudio(audioBuffer, tempFilePath = null) {
+  static async transcribeAudio(audioBuffer, tempFilePath = null, openaiSettings = null) {
     let fileToUse = null;
     let actualFilePath = tempFilePath;
     let shouldCleanup = false;
     
     try {
+      const openai = this.getClient(openaiSettings);
+      
+      // Use admin-configured model if set, otherwise default
+      let whisperModel = 'whisper-1';
+      if (openaiSettings?.whisper_model || openaiSettings?.whisperModel) {
+        whisperModel = openaiSettings.whisper_model || openaiSettings.whisperModel;
+        logger.info({ model: whisperModel }, 'Using admin-configured Whisper model');
+      } else {
+        logger.info({ model: whisperModel }, 'Using default Whisper model');
+      }
+      
       // OpenAI Whisper API requires a File object or readable stream
       // We need to either use a temp file or create a File from the buffer
       if (tempFilePath) {
@@ -32,12 +123,12 @@ export class OpenAIService {
         logger.debug({ tempPath: actualFilePath, size: audioBuffer.length }, 'Created temp file for transcription');
       }
 
-      console.log('🎤 Calling OpenAI Whisper API...');
-      logger.info({ fileSize: audioBuffer.length, filePath: actualFilePath }, 'Transcribing audio with Whisper');
+      console.log(`🎤 Calling OpenAI Whisper API (${whisperModel})...`);
+      logger.info({ fileSize: audioBuffer.length, filePath: actualFilePath, model: whisperModel }, 'Transcribing audio with Whisper');
       
       const transcription = await openai.audio.transcriptions.create({
         file: fileToUse,
-        model: 'whisper-1',
+        model: whisperModel,
       });
 
       console.log(`✅ Transcription received: ${transcription.text.length} characters`);
@@ -85,8 +176,19 @@ export class OpenAIService {
   /**
    * Analyze transcript using GPT
    */
-  static async analyzeTranscript(transcript) {
+  static async analyzeTranscript(transcript, openaiSettings = null) {
     try {
+      const openai = this.getClient(openaiSettings);
+      
+      // Use admin-configured model if set, otherwise default
+      let gptModel = 'gpt-4o-mini';
+      if (openaiSettings?.gpt_model || openaiSettings?.gptModel) {
+        gptModel = openaiSettings.gpt_model || openaiSettings.gptModel;
+        logger.info({ model: gptModel }, 'Using admin-configured GPT model');
+      } else {
+        logger.info({ model: gptModel }, 'Using default GPT model');
+      }
+      
       const analysisPrompt = `
 You are an AI call analyst. Using the transcript below, generate a structured report.
 
@@ -113,8 +215,10 @@ IMPORTANT: Format your response EXACTLY as follows, with each section on a new l
 Make sure each section starts with its number (2., 3., 4., 5.) on a new line and is clearly separated.
 `;
 
+      logger.info({ model: gptModel }, 'Analyzing transcript with GPT');
+      
       const response = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model: gptModel,
         messages: [{ role: 'user', content: analysisPrompt }],
       });
 

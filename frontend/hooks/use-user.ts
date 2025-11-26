@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import apiClient from '@/lib/api-client';
-import { FreePbxSettings, TwilioSettings } from '@/types/call';
+import { FreePbxSettings, TwilioSettings, OpenAISettings } from '@/types/call';
+export type { TwilioSettings } from '@/types/call';
 
 // User type matching backend response
 export interface User {
@@ -14,6 +15,7 @@ export interface User {
   timezone?: string;
   twilioSettings?: TwilioSettings;
   freepbxSettings?: FreePbxSettings;
+  openaiSettings?: OpenAISettings;
 }
 
 // Fetch current user information

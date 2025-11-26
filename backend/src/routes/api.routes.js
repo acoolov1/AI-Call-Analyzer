@@ -3,6 +3,8 @@ import { CallsController } from '../controllers/calls.controller.js';
 import { StatsController } from '../controllers/stats.controller.js';
 import { UserController } from '../controllers/user.controller.js';
 import { FreePbxController } from '../controllers/freepbx.controller.js';
+import { FreePbxCdrController } from '../controllers/freepbx-cdr.controller.js';
+import { OpenAIController } from '../controllers/openai.controller.js';
 import { authenticate } from '../middleware/auth.middleware.js';
 import { apiRateLimiter } from '../middleware/rate-limit.middleware.js';
 
@@ -39,6 +41,15 @@ router.get('/integrations/freepbx/status', FreePbxController.status);
 router.post('/integrations/freepbx/test', FreePbxController.testConnection);
 router.post('/integrations/freepbx/sync', FreePbxController.syncNow);
 
+// FreePBX CDR routes
+router.get('/integrations/freepbx/cdr/status', FreePbxCdrController.getStatus);
+router.post('/integrations/freepbx/cdr/test', FreePbxCdrController.testConnection);
+router.post('/integrations/freepbx/cdr/sync', FreePbxCdrController.syncNow);
+router.get('/cdr-calls', FreePbxCdrController.getCdrCalls);
+
+// OpenAI routes
+router.post('/integrations/openai/test', OpenAIController.testConnection);
+
 // Audio route (for serving recordings)
 router.get('/audio/:id', async (req, res, next) => {
   try {
@@ -55,10 +66,16 @@ router.get('/audio/:id', async (req, res, next) => {
     }
 
     let audioBuffer;
-    if (call.source === CALL_SOURCE.FREEPBX) {
+    if (call.source === CALL_SOURCE.FREEPBX || call.source === CALL_SOURCE.FREEPBX_CDR) {
       const { User } = await import('../models/User.js');
       const freepbxSettings = await User.getFreePbxSettingsRaw(req.user.id);
-      audioBuffer = await FreePbxService.downloadRecording(call.recordingPath || call.recordingUrl, freepbxSettings);
+      
+      if (call.source === CALL_SOURCE.FREEPBX_CDR) {
+        const { FreePbxCdrService } = await import('../services/freepbx-cdr.service.js');
+        audioBuffer = await FreePbxCdrService.downloadRecording(call.recordingPath || call.recordingUrl, freepbxSettings);
+      } else {
+        audioBuffer = await FreePbxService.downloadRecording(call.recordingPath || call.recordingUrl, freepbxSettings);
+      }
     } else {
       audioBuffer = await TwilioService.downloadRecording(call.recordingUrl);
     }
@@ -67,6 +84,8 @@ router.get('/audio/:id', async (req, res, next) => {
     res.setHeader('Content-Disposition', `inline; filename="recording-${id}.wav"`);
     res.send(audioBuffer);
   } catch (error) {
+    console.error('❌ Audio download error:', error.message);
+    console.error('Stack:', error.stack);
     next(error);
   }
 });

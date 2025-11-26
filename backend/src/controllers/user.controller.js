@@ -34,7 +34,7 @@ export class UserController {
   static async updatePreferences(req, res, next) {
     try {
       const userId = req.user.id;
-      const { timezone, twilioSettings, freepbxSettings } = req.body;
+      const { timezone, twilioSettings, freepbxSettings, openaiSettings } = req.body;
 
       console.log(`\n⚙️ Updating preferences for user: ${userId}`);
 
@@ -108,11 +108,15 @@ export class UserController {
 
       let currentUser = null;
       let rawFreePbxSettings = null;
-      if (twilioSettings !== undefined || freepbxSettings !== undefined) {
+      let rawOpenAISettings = null;
+      if (twilioSettings !== undefined || freepbxSettings !== undefined || openaiSettings !== undefined) {
         currentUser = await User.findById(userId);
       }
       if (freepbxSettings !== undefined) {
         rawFreePbxSettings = await User.getFreePbxSettingsRaw(userId);
+      }
+      if (openaiSettings !== undefined) {
+        rawOpenAISettings = await User.getOpenAISettingsRaw(userId);
       }
 
       if (twilioSettings !== undefined) {
@@ -143,6 +147,12 @@ export class UserController {
           username: '',
           tls: true,
           password: rawFreePbxSettings?.password,
+          mysql_host: rawFreePbxSettings?.mysql_host || '',
+          mysql_port: rawFreePbxSettings?.mysql_port || 3306,
+          mysql_username: rawFreePbxSettings?.mysql_username || '',
+          mysql_password: rawFreePbxSettings?.mysql_password,
+          mysql_database: rawFreePbxSettings?.mysql_database || 'asteriskcdrdb',
+          serverTimezone: rawFreePbxSettings?.serverTimezone || '',
           syncIntervalMinutes: 10,
         };
 
@@ -170,6 +180,11 @@ export class UserController {
           resolvedPassword = freepbxSettings.password.length > 0 ? freepbxSettings.password : null;
         }
 
+        let resolvedMysqlPassword = baseFreePbx.mysql_password;
+        if (typeof freepbxSettings.mysql_password === 'string') {
+          resolvedMysqlPassword = freepbxSettings.mysql_password.length > 0 ? freepbxSettings.mysql_password : null;
+        }
+
         if (mergedSettings.enabled) {
           if (!mergedSettings.host || !mergedSettings.username || !resolvedPassword) {
             return res.status(400).json({
@@ -186,7 +201,44 @@ export class UserController {
           username: mergedSettings.username,
           tls: mergedSettings.tls !== false,
           password: resolvedPassword,
+          mysql_host: mergedSettings.mysql_host || mergedSettings.host,
+          mysql_port: Number(mergedSettings.mysql_port) || 3306,
+          mysql_username: mergedSettings.mysql_username,
+          mysql_password: resolvedMysqlPassword,
+          mysql_database: mergedSettings.mysql_database || 'asteriskcdrdb',
+          serverTimezone: mergedSettings.serverTimezone || '',
           syncIntervalMinutes: Number(mergedSettings.syncIntervalMinutes),
+        };
+      }
+
+      if (openaiSettings !== undefined) {
+        const baseOpenAI = {
+          enabled: false,
+          whisper_model: 'whisper-1',
+          gpt_model: 'gpt-4o-mini',
+          api_key: rawOpenAISettings?.api_key,
+        };
+
+        const mergedOpenAISettings = {
+          ...baseOpenAI,
+          ...openaiSettings,
+        };
+
+        // Handle API key: empty string means keep existing, undefined/null means remove
+        let resolvedApiKey = mergedOpenAISettings.api_key;
+        if (openaiSettings.api_key === '') {
+          // Empty string means keep existing password
+          resolvedApiKey = rawOpenAISettings?.api_key;
+        } else if (openaiSettings.api_key === null || openaiSettings.api_key === undefined) {
+          // Null/undefined means clear the password
+          resolvedApiKey = null;
+        }
+
+        updates.openaiSettings = {
+          enabled: Boolean(mergedOpenAISettings.enabled),
+          whisper_model: mergedOpenAISettings.whisper_model || 'whisper-1',
+          gpt_model: mergedOpenAISettings.gpt_model || 'gpt-4o-mini',
+          api_key: resolvedApiKey,
         };
       }
 

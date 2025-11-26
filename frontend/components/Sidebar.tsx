@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useSession, signOut } from 'next-auth/react'
-import { LayoutDashboard, Phone, Settings, LogOut, ChevronDown, User, Sliders, PhoneCall, ServerCog } from 'lucide-react'
+import { LayoutDashboard, Phone, Settings, LogOut, ChevronDown, User, Sliders, PhoneCall, ServerCog, History, Brain } from 'lucide-react'
 import { useState } from 'react'
 import styles from './Sidebar.module.css'
 
@@ -19,6 +19,9 @@ export default function Sidebar() {
     if (path === '/calls') {
       return pathname === '/calls' || pathname?.startsWith('/calls/')
     }
+    if (path === '/call-history') {
+      return pathname === '/call-history' || pathname?.startsWith('/call-history/')
+    }
     if (path.startsWith('/settings')) {
       return pathname === path
     }
@@ -28,6 +31,7 @@ export default function Sidebar() {
   const menuItems = [
     { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { href: '/calls', label: 'Interactions', icon: Phone },
+    { href: '/call-history', label: 'Call History', icon: History },
   ]
 
   const settingsSubItems = [
@@ -35,6 +39,7 @@ export default function Sidebar() {
     { href: '/settings/preferences', label: 'Preferences', icon: Sliders },
     { href: '/settings/twilio', label: 'Twilio Call Settings', icon: PhoneCall },
     { href: '/settings/freepbx', label: 'FreePBX Integration', icon: ServerCog },
+    { href: '/settings/openai', label: 'OpenAI Integration', icon: Brain },
   ]
 
   return (

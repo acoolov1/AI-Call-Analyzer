@@ -135,3 +135,60 @@ export function useFreepbxTestConnection() {
   });
 }
 
+export function useFreepbxCdrTestConnection() {
+  return useMutation({
+    mutationFn: async () => {
+      const { data } = await apiClient.post('/api/v1/integrations/freepbx/cdr/test');
+      return data.data;
+    },
+  });
+}
+
+export function useCdrCalls(page: number = 1, limit: number = 50) {
+  return useQuery({
+    queryKey: ['cdr-calls', page, limit],
+    queryFn: async () => {
+      const { data } = await apiClient.get('/api/v1/cdr-calls', {
+        params: { page, limit },
+      });
+      return data;
+    },
+  });
+}
+
+export function useCdrSync() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { data } = await apiClient.post('/api/v1/integrations/freepbx/cdr/sync');
+      return data.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['cdr-calls'] });
+    },
+  });
+}
+
+export function useCdrStatus() {
+  return useQuery({
+    queryKey: ['cdr-status'],
+    queryFn: async () => {
+      const { data } = await apiClient.get('/api/v1/integrations/freepbx/cdr/status');
+      return data;
+    },
+  });
+}
+
+// OpenAI test connection
+export function useOpenAITestConnection() {
+  return useMutation({
+    mutationFn: async (settings: { apiKey?: string; whisperModel: string; gptModel: string }) => {
+      const { data } = await apiClient.post('/api/v1/integrations/openai/test', {
+        apiKey: settings.apiKey,
+        whisperModel: settings.whisperModel,
+        gptModel: settings.gptModel,
+      });
+      return data.data;
+    },
+  });
+}

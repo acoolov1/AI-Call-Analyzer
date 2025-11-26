@@ -7,7 +7,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import DashboardLayout from '@/components/DashboardLayout'
 import apiClient from '@/lib/api-client'
 import { useUser } from '@/hooks/use-user'
-import { useFreepbxStatus, useFreepbxSync, useFreepbxTestConnection } from '@/hooks/use-calls'
+import { useFreepbxStatus, useFreepbxSync, useFreepbxTestConnection, useFreepbxCdrTestConnection } from '@/hooks/use-calls'
 import type { FreePbxSettings } from '@/types/call'
 
 const defaultSettings: FreePbxSettings = {
@@ -18,6 +18,11 @@ const defaultSettings: FreePbxSettings = {
   tls: true,
   syncIntervalMinutes: 10,
   hasPassword: false,
+  mysql_host: '',
+  mysql_port: 3306,
+  mysql_username: '',
+  mysql_database: 'asteriskcdrdb',
+  hasMysqlPassword: false,
 }
 
 export default function FreePbxSettingsPage() {
@@ -28,11 +33,14 @@ export default function FreePbxSettingsPage() {
   const { data: statusData, isLoading: isStatusLoading } = useFreepbxStatus()
   const syncMutation = useFreepbxSync()
   const testConnectionMutation = useFreepbxTestConnection()
+  const testMysqlConnectionMutation = useFreepbxCdrTestConnection()
 
   const [form, setForm] = useState({
     ...defaultSettings,
     password: '',
     passwordChanged: false,
+    mysql_password: '',
+    mysqlPasswordChanged: false,
   })
   const [isSaving, setIsSaving] = useState(false)
   const [message, setMessage] = useState<string>('')
@@ -48,8 +56,15 @@ export default function FreePbxSettingsPage() {
         tls: user.freepbxSettings.tls ?? true,
         syncIntervalMinutes: user.freepbxSettings.syncIntervalMinutes || 10,
         hasPassword: user.freepbxSettings.hasPassword ?? false,
+        mysql_host: user.freepbxSettings.mysql_host || user.freepbxSettings.host || '',
+        mysql_port: user.freepbxSettings.mysql_port || 3306,
+        mysql_username: user.freepbxSettings.mysql_username || '',
+        mysql_database: user.freepbxSettings.mysql_database || 'asteriskcdrdb',
+        hasMysqlPassword: user.freepbxSettings.hasMysqlPassword ?? false,
         password: '',
         passwordChanged: false,
+        mysql_password: '',
+        mysqlPasswordChanged: false,
       })
     }
   }, [user?.freepbxSettings])
@@ -104,6 +119,23 @@ export default function FreePbxSettingsPage() {
     }))
   }
 
+  const handleMysqlPasswordChange = (value: string) => {
+    setForm((prev) => ({
+      ...prev,
+      mysql_password: value,
+      mysqlPasswordChanged: true,
+    }))
+  }
+
+  const handleClearMysqlPassword = () => {
+    setForm((prev) => ({
+      ...prev,
+      mysql_password: '',
+      mysqlPasswordChanged: true,
+      hasMysqlPassword: false,
+    }))
+  }
+
   const handleSave = async (event: React.FormEvent) => {
     event.preventDefault()
     setIsSaving(true)
@@ -118,11 +150,19 @@ export default function FreePbxSettingsPage() {
           username: form.username,
           tls: form.tls,
           syncIntervalMinutes: Number(form.syncIntervalMinutes),
+          mysql_host: form.mysql_host || form.host,
+          mysql_port: Number(form.mysql_port),
+          mysql_username: form.mysql_username,
+          mysql_database: form.mysql_database,
         },
       }
 
       if (form.passwordChanged) {
         payload.freepbxSettings.password = form.password
+      }
+
+      if (form.mysqlPasswordChanged) {
+        payload.freepbxSettings.mysql_password = form.mysql_password
       }
 
       const response = await apiClient.patch('/api/v1/user/preferences', payload)
@@ -137,6 +177,9 @@ export default function FreePbxSettingsPage() {
           password: '',
           passwordChanged: false,
           hasPassword: Boolean(form.password || response.data.data?.freepbxSettings?.hasPassword),
+          mysql_password: '',
+          mysqlPasswordChanged: false,
+          hasMysqlPassword: Boolean(form.mysql_password || response.data.data?.freepbxSettings?.hasMysqlPassword),
         }))
       }
     } catch (error: any) {
@@ -153,10 +196,25 @@ export default function FreePbxSettingsPage() {
     setMessage('')
     try {
       await testConnectionMutation.mutateAsync()
-      setMessage('Successfully connected to FreePBX.')
+      setMessage('Successfully connected to FreePBX ARI.')
       setMessageType('success')
     } catch (error: any) {
-      const msg = error.response?.data?.message || 'Connection test failed.'
+      const msg = error.response?.data?.message || 'ARI connection test failed.'
+      setMessage(msg)
+      setMessageType('error')
+    } finally {
+      setTimeout(() => setMessage(''), 4000)
+    }
+  }
+
+  const handleTestMysqlConnection = async () => {
+    setMessage('')
+    try {
+      await testMysqlConnectionMutation.mutateAsync()
+      setMessage('Successfully connected to FreePBX MySQL database.')
+      setMessageType('success')
+    } catch (error: any) {
+      const msg = error.response?.data?.message || 'MySQL connection test failed.'
       setMessage(msg)
       setMessageType('error')
     } finally {
@@ -201,7 +259,15 @@ export default function FreePbxSettingsPage() {
               onClick={handleTestConnection}
               disabled={testConnectionMutation.isPending || !form.enabled}
             >
-              {testConnectionMutation.isPending ? 'Testing...' : 'Test Connection'}
+              {testConnectionMutation.isPending ? 'Testing ARI...' : 'Test ARI'}
+            </button>
+            <button
+              type="button"
+              className="ghost-btn"
+              onClick={handleTestMysqlConnection}
+              disabled={testMysqlConnectionMutation.isPending || (!form.mysql_username && !user?.freepbxSettings?.mysql_username)}
+            >
+              {testMysqlConnectionMutation.isPending ? 'Testing MySQL...' : 'Test MySQL'}
             </button>
             <button
               type="button"
@@ -315,6 +381,78 @@ export default function FreePbxSettingsPage() {
               </div>
               <div className="setting-hint">
                 Credentials should match an ARI user defined in <code>/etc/asterisk/ari.conf</code>.
+              </div>
+            </div>
+
+            <div className="setting-item">
+              <div className="setting-label">MySQL Database Access (CDR)</div>
+              <div className="setting-hint" style={{marginBottom: '12px'}}>
+                Connect to FreePBX's Call Detail Records database for richer call history.
+              </div>
+              <div className="settings-grid">
+                <div>
+                  <div className="setting-label">MySQL Host</div>
+                  <input
+                    type="text"
+                    className="text-input"
+                    placeholder={form.host || "Same as FreePBX host"}
+                    value={form.mysql_host}
+                    onChange={(e) => handleFieldChange('mysql_host', e.target.value)}
+                  />
+                </div>
+                <div>
+                  <div className="setting-label">MySQL Port</div>
+                  <input
+                    type="number"
+                    className="text-input"
+                    min={1}
+                    max={65535}
+                    value={form.mysql_port}
+                    onChange={(e) => handleFieldChange('mysql_port', parseInt(e.target.value, 10))}
+                  />
+                </div>
+              </div>
+              <div className="settings-grid">
+                <div>
+                  <div className="setting-label">Database Name</div>
+                  <input
+                    type="text"
+                    className="text-input"
+                    placeholder="asteriskcdrdb"
+                    value={form.mysql_database}
+                    onChange={(e) => handleFieldChange('mysql_database', e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="settings-grid">
+                <div>
+                  <div className="setting-label">MySQL Username</div>
+                  <input
+                    type="text"
+                    className="text-input"
+                    placeholder="mysql-user"
+                    value={form.mysql_username}
+                    onChange={(e) => handleFieldChange('mysql_username', e.target.value)}
+                  />
+                </div>
+                <div>
+                  <div className="setting-label">MySQL Password</div>
+                  <input
+                    type="password"
+                    className="text-input"
+                    placeholder={form.hasMysqlPassword && !form.mysqlPasswordChanged ? '••••••••' : 'Enter MySQL password'}
+                    value={form.mysql_password}
+                    onChange={(e) => handleMysqlPasswordChange(e.target.value)}
+                  />
+                  {form.hasMysqlPassword && !form.mysqlPasswordChanged && (
+                    <button type="button" className="link-btn" onClick={handleClearMysqlPassword}>
+                      Clear saved MySQL password
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="setting-hint">
+                MySQL credentials for accessing the <code>asteriskcdrdb</code> database.
               </div>
             </div>
           </div>
@@ -505,13 +643,15 @@ export default function FreePbxSettingsPage() {
           color: #37352f;
         }
         .ghost-btn {
-          padding: 8px 14px;
+          padding: 10px 20px;
           border: 1px solid #d7d5d1;
           background: #fff;
           border-radius: 6px;
-          font-size: 13px;
+          font-size: 14px;
           color: #37352f;
           cursor: pointer;
+          min-width: 110px;
+          text-align: center;
         }
         .ghost-btn:disabled {
           opacity: 0.6;

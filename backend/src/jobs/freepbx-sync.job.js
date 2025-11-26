@@ -24,6 +24,7 @@ export function getFreePbxSyncStatus() {
 export async function runFreePbxSync({ reason = 'manual', userId } = {}) {
   const targetUserId = userId || getTargetUserId();
   const freepbxSettings = await User.getFreePbxSettingsRaw(targetUserId);
+  const openaiSettings = await User.getOpenAISettingsRaw(targetUserId);
 
   if (!FreePbxService.isEnabled(freepbxSettings)) {
     return { synced: 0, skipped: true, reason: 'disabled' };
@@ -70,6 +71,7 @@ export async function runFreePbxSync({ reason = 'manual', userId } = {}) {
           recordingPath: recording.name,
           call,
           freepbxSettings,
+          openaiSettings,
         });
         synced += 1;
       } catch (processingError) {

@@ -8,6 +8,7 @@ export const CALL_STATUS = {
 export const CALL_SOURCE = {
   TWILIO: 'twilio',
   FREEPBX: 'freepbx',
+  FREEPBX_CDR: 'freepbx-cdr',
 };
 
 export const SENTIMENT = {

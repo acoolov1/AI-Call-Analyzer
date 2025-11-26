@@ -22,6 +22,18 @@ export interface FreePbxSettings {
   tls: boolean;
   syncIntervalMinutes: number;
   hasPassword?: boolean;
+  mysql_host?: string;
+  mysql_port?: number;
+  mysql_username?: string;
+  mysql_database?: string;
+  hasMysqlPassword?: boolean;
+}
+
+export interface OpenAISettings {
+  enabled: boolean;
+  whisperModel: string;
+  gptModel: string;
+  hasApiKey?: boolean;
 }
 
 export interface Call {

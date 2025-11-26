@@ -26,7 +26,7 @@ export function errorHandler(err, req, res, next) {
   const isTwilioWebhook = req.path.includes('/webhooks/twilio') || 
                           req.path === '/voice' ||
                           req.headers['x-twilio-signature'] ||
-                          req.body.CallSid;
+                          req.body?.CallSid;
 
   // For Twilio webhooks, always return TwiML XML, not JSON
   if (isTwilioWebhook) {
@@ -43,10 +43,8 @@ export function errorHandler(err, req, res, next) {
   if (err instanceof AppError && err.isOperational) {
     return res.status(err.statusCode).json({
       success: false,
-      error: {
-        message: err.message,
-        ...(err.errors && { errors: err.errors }),
-      },
+      error: err.message,
+      ...(err.errors && { errors: err.errors }),
     });
   }
 
@@ -58,10 +56,8 @@ export function errorHandler(err, req, res, next) {
 
   res.status(statusCode).json({
     success: false,
-    error: {
-      message,
-      ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
-    },
+    error: message,
+    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
   });
 }
 

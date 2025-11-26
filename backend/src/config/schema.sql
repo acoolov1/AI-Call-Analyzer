@@ -3,8 +3,8 @@ CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email VARCHAR(255) UNIQUE NOT NULL,
   hashed_password VARCHAR(255),
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW(),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
   subscription_tier VARCHAR(50) DEFAULT 'free',
   stripe_customer_id VARCHAR(255),
   stripe_subscription_id VARCHAR(255),
@@ -30,12 +30,12 @@ CREATE TABLE IF NOT EXISTS calls (
   duration INTEGER,
   source VARCHAR(50) DEFAULT 'twilio',
   external_id VARCHAR(255),
-  external_created_at TIMESTAMP,
+  external_created_at TIMESTAMPTZ,
   source_metadata JSONB,
-  synced_at TIMESTAMP,
-  created_at TIMESTAMP DEFAULT NOW(),
-  updated_at TIMESTAMP DEFAULT NOW(),
-  processed_at TIMESTAMP
+  synced_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  processed_at TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_calls_user_id ON calls(user_id);
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS call_metadata (
   sentiment VARCHAR(50),
   action_items JSONB,
   urgent_topics TEXT[],
-  created_at TIMESTAMP DEFAULT NOW()
+  created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_call_metadata_call_id ON call_metadata(call_id);

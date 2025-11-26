@@ -86,15 +86,20 @@ export async function initializeWorkers() {
       
       logger.info({ jobId: job.id, callId }, 'Processing transcription job');
       
+      // Get platform-wide OpenAI settings (configured by admin)
+      const { OpenAIService } = await import('../services/openai.service.js');
+      const openaiSettings = await OpenAIService.getPlatformSettings();
+      
       // Download and transcribe
       const { TwilioService } = await import('../services/twilio.service.js');
-      const { OpenAIService } = await import('../services/openai.service.js');
       const path = await import('path');
       const fs = await import('fs');
       
+      const { OpenAIService: OpenAIServiceForTranscribe } = await import('../services/openai.service.js');
+      
       const tempFilePath = path.join(process.cwd(), `temp-recording-${callId}.wav`);
       const audioBuffer = await TwilioService.downloadRecording(recordingUrl);
-      const transcript = await OpenAIService.transcribeAudio(audioBuffer, tempFilePath);
+      const transcript = await OpenAIServiceForTranscribe.transcribeAudio(audioBuffer, tempFilePath, openaiSettings);
       
       // Clean up temp file
       if (fs.existsSync(tempFilePath)) {
@@ -128,9 +133,12 @@ export async function initializeWorkers() {
       
       logger.info({ jobId: job.id, callId }, 'Processing analysis job');
       
-      // Analyze transcript
+      // Get platform-wide OpenAI settings (configured by admin)
       const { OpenAIService } = await import('../services/openai.service.js');
-      const analysis = await OpenAIService.analyzeTranscript(transcript);
+      const openaiSettings = await OpenAIService.getPlatformSettings();
+      
+      // Analyze transcript
+      const analysis = await OpenAIService.analyzeTranscript(transcript, openaiSettings);
       const parsed = OpenAIService.parseAnalysis(analysis);
       
       // Update call and save metadata
@@ -176,7 +184,12 @@ export async function queueTranscription(callId, recordingUrl) {
     // Fallback to synchronous processing
     logger.info({ callId }, 'Redis not available, processing synchronously');
     const { CallProcessingService } = await import('../services/call-processing.service.js');
-    return await CallProcessingService.processRecording(callId, { recordingUrl });
+    const { OpenAIService } = await import('../services/openai.service.js');
+    
+    // Get platform-wide OpenAI settings (configured by admin)
+    const openaiSettings = await OpenAIService.getPlatformSettings();
+    
+    return await CallProcessingService.processRecording(callId, { recordingUrl, openaiSettings });
   }
   
   const job = await transcriptionQueue.add(

@@ -87,20 +87,26 @@ export class Call {
   }
 
   static async findByUserId(userId, options = {}) {
-    const { limit = 50, offset = 0, status } = options;
+    const { limit = 50, offset = 0, status, source } = options;
     
     let sql = 'SELECT * FROM calls WHERE user_id = $1';
     const params = [userId];
+    let paramIndex = 2;
 
     if (status) {
-      sql += ' AND status = $2';
+      sql += ` AND status = $${paramIndex}`;
       params.push(status);
-      sql += ' ORDER BY COALESCE(external_created_at, created_at) DESC LIMIT $3 OFFSET $4';
-      params.push(limit, offset);
-    } else {
-      sql += ' ORDER BY COALESCE(external_created_at, created_at) DESC LIMIT $2 OFFSET $3';
-      params.push(limit, offset);
+      paramIndex++;
     }
+
+    if (source) {
+      sql += ` AND source = $${paramIndex}`;
+      params.push(source);
+      paramIndex++;
+    }
+
+    sql += ` ORDER BY COALESCE(external_created_at, created_at) DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+    params.push(limit, offset);
 
     const result = await query(sql, params);
     return result.rows.map(row => this.mapRowToCall(row));
@@ -309,6 +315,17 @@ export class Call {
       ids
     );
     return result.rows.length;
+  }
+
+  /**
+   * Count calls by source for a user
+   */
+  static async countBySource(userId, source) {
+    const result = await query(
+      'SELECT COUNT(*) as count FROM calls WHERE user_id = $1 AND source = $2',
+      [userId, source]
+    );
+    return parseInt(result.rows[0]?.count || 0, 10);
   }
 }
 

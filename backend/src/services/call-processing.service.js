@@ -28,6 +28,7 @@ export class CallProcessingService {
       const recordingUrl = options.recordingUrl || call.recordingUrl;
       const recordingPath = options.recordingPath || call.recordingPath;
       const freepbxSettings = options.freepbxSettings;
+      const openaiSettings = options.openaiSettings;
 
       // Update status to processing
       console.log('📊 Updating status to processing...');
@@ -37,11 +38,18 @@ export class CallProcessingService {
       console.log('⬇️  Downloading recording...');
       logger.info({ callId, source, recordingUrl, recordingPath }, 'Downloading recording');
       let audioBuffer;
-      if (source === CALL_SOURCE.FREEPBX) {
+      if (source === CALL_SOURCE.FREEPBX || source === CALL_SOURCE.FREEPBX_CDR) {
         if (!recordingPath && !recordingUrl) {
           throw new Error('FreePBX recording reference missing');
         }
-        audioBuffer = await FreePbxService.downloadRecording(recordingPath || recordingUrl, freepbxSettings);
+        
+        // Use CDR-specific download logic for CDR calls
+        if (source === CALL_SOURCE.FREEPBX_CDR) {
+          const { FreePbxCdrService } = await import('./freepbx-cdr.service.js');
+          audioBuffer = await FreePbxCdrService.downloadRecording(recordingPath || recordingUrl, freepbxSettings);
+        } else {
+          audioBuffer = await FreePbxService.downloadRecording(recordingPath || recordingUrl, freepbxSettings);
+        }
       } else {
         if (!recordingUrl) {
           throw new Error('Recording URL missing for call');
@@ -53,13 +61,13 @@ export class CallProcessingService {
       // Transcribe
       console.log('🎤 Transcribing audio...');
       logger.info({ callId }, 'Transcribing audio');
-      const transcript = await OpenAIService.transcribeAudio(audioBuffer, tempFilePath);
+      const transcript = await OpenAIService.transcribeAudio(audioBuffer, tempFilePath, openaiSettings);
       console.log(`✅ Transcription complete (${transcript.length} characters)`);
 
       // Analyze
       console.log('🤖 Analyzing transcript...');
       logger.info({ callId }, 'Analyzing transcript');
-      const analysis = await OpenAIService.analyzeTranscript(transcript);
+      const analysis = await OpenAIService.analyzeTranscript(transcript, openaiSettings);
       console.log('✅ Analysis complete');
 
       // Parse analysis

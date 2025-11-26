@@ -41,6 +41,19 @@ export class User {
     return result.rows[0].freepbx_settings || null;
   }
 
+  static async getOpenAISettingsRaw(id) {
+    const result = await query(
+      'SELECT openai_settings FROM users WHERE id = $1',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      throw new NotFoundError('User');
+    }
+
+    return result.rows[0].openai_settings || null;
+  }
+
   static async create(data) {
     const {
       id,
@@ -70,6 +83,7 @@ export class User {
       'timezone',
       'twilio_settings',
       'freepbx_settings',
+      'openai_settings',
     ];
 
     const fields = [];
@@ -82,11 +96,12 @@ export class User {
                    key === 'stripeSubscriptionId' ? 'stripe_subscription_id' :
                    key === 'twilioSettings' ? 'twilio_settings' :
                    key === 'freepbxSettings' ? 'freepbx_settings' :
+                   key === 'openaiSettings' ? 'openai_settings' :
                    key;
 
       if (allowedFields.includes(dbKey)) {
         // Handle JSONB fields
-        if ((dbKey === 'twilio_settings' || dbKey === 'freepbx_settings') && typeof value === 'object') {
+        if ((dbKey === 'twilio_settings' || dbKey === 'freepbx_settings' || dbKey === 'openai_settings') && typeof value === 'object') {
           fields.push(`${dbKey} = $${paramIndex}::jsonb`);
           values.push(JSON.stringify(value));
         } else {
@@ -154,6 +169,27 @@ export class User {
       tls: rawFreePbx.tls !== false,
       syncIntervalMinutes: rawFreePbx.syncIntervalMinutes || 10,
       hasPassword: Boolean(rawFreePbx.password),
+      mysql_host: rawFreePbx.mysql_host || rawFreePbx.host || '',
+      mysql_port: rawFreePbx.mysql_port || 3306,
+      mysql_username: rawFreePbx.mysql_username || '',
+      mysql_database: rawFreePbx.mysql_database || 'asteriskcdrdb',
+      hasMysqlPassword: Boolean(rawFreePbx.mysql_password),
+      serverTimezone: rawFreePbx.serverTimezone || '',
+    };
+
+    const rawOpenAI = row.openai_settings || {};
+    const defaultOpenAISettings = {
+      enabled: false,
+      whisperModel: 'whisper-1',
+      gptModel: 'gpt-4o-mini',
+      hasApiKey: false,
+    };
+
+    const sanitizedOpenAI = {
+      enabled: Boolean(rawOpenAI.enabled),
+      whisperModel: rawOpenAI.whisper_model || rawOpenAI.whisperModel || 'whisper-1',
+      gptModel: rawOpenAI.gpt_model || rawOpenAI.gptModel || 'gpt-4o-mini',
+      hasApiKey: Boolean(rawOpenAI.api_key),
     };
 
     return {
@@ -169,6 +205,10 @@ export class User {
       freepbxSettings: {
         ...defaultFreePbxSettings,
         ...sanitizedFreePbx,
+      },
+      openaiSettings: {
+        ...defaultOpenAISettings,
+        ...sanitizedOpenAI,
       },
     };
   }
