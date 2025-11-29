@@ -55,10 +55,13 @@ This is a **modern full-stack application** with separated frontend and backend:
    npm run dev  # Starts on port 3001
    ```
 
-3. **Easy Start (Windows)**
-   - Double-click `START_BACKEND.bat` (starts backend)
-   - Double-click `START_FRONTEND.bat` (starts frontend)
-   - Or use `START_BACKEND_FIRST.bat` for guided startup
+3. **Easy Start (Windows) - RECOMMENDED ⭐**
+   - **First time or after restart:** Double-click `START_ALL_SAFELY.ps1` or `START_ALL_SAFELY.bat`
+   - **Backend only (with logs):** Double-click `START_BACKEND_WITH_LOGS.bat`
+   - **Check status:** Double-click `CHECK_SERVERS.bat`
+   - **Fix issues:** Double-click `RESTART_EVERYTHING.bat`
+   
+   📖 **See [STARTUP_GUIDE.md](STARTUP_GUIDE.md) for detailed instructions**
 
 4. **Access the Application**
    - Frontend: http://localhost:3001
@@ -186,6 +189,14 @@ npm run lint         # Run ESLint
 
 ## 🐛 Troubleshooting
 
+### After Computer Restart: App Not Working / CORS Errors
+**SOLUTION:** Use the safe startup script to prevent port conflicts
+1. Double-click `RESTART_EVERYTHING.bat` to clean up
+2. Double-click `START_ALL_SAFELY.ps1` or `START_ALL_SAFELY.bat`
+3. Run `CHECK_SERVERS.bat` to verify both servers are running correctly
+
+See [STARTUP_GUIDE.md](STARTUP_GUIDE.md) for detailed instructions.
+
 ### Port Already in Use
 Run `RESTART_EVERYTHING.bat` to kill all Node processes and free up ports.
 
@@ -198,6 +209,7 @@ Run `RESTART_EVERYTHING.bat` to kill all Node processes and free up ports.
 - Ensure backend is running on port 3000
 - Check `NEXT_PUBLIC_API_URL` in frontend `.env.local`
 - Verify CORS is configured in backend
+- Run `CHECK_SERVERS.bat` to verify servers are on correct ports
 
 ### Twilio Webhooks Not Working
 - Use ngrok to expose local server: `ngrok http 3000`

@@ -216,51 +216,52 @@ export default function CallHistoryPage() {
               View and manage call history from FreePBX CDR • {pagination.total} calls
             </p>
           </div>
-          {cdrStatus?.freepbxCdrSettings?.enabled && (
-            <div className="sync-panel">
-              <div className="sync-meta">
-                <span className="sync-label">CDR Database</span>
-                <span className="sync-value">
-                  {isStatusLoading
-                    ? 'Checking status...'
-                    : cdrStatus?.lastRun?.at
-                      ? `Last sync ${new Date(cdrStatus.lastRun.at).toLocaleString()}`
-                      : 'No syncs yet'}
-                </span>
+          <div className="search-and-sync-row">
+            <div className="search-wrapper">
+              <div className={`search-container ${searchFocused ? 'focused' : ''}`}>
+                <svg className="search-icon" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                  <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                </svg>
+                <input
+                  type="text"
+                  className="search-input"
+                  placeholder="Search calls..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onFocus={() => setSearchFocused(true)}
+                  onBlur={() => setSearchFocused(false)}
+                  autoComplete="off"
+                />
+                {searchQuery && (
+                  <button className="clear-button visible" onClick={() => setSearchQuery('')} aria-label="Clear search">
+                    <svg className="clear-icon" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                      <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                    </svg>
+                  </button>
+                )}
               </div>
-              <button
-                type="button"
-                className="sync-btn"
-                onClick={handleManualSync}
-                disabled={syncMutation.isPending}
-              >
-                {syncMutation.isPending ? 'Syncing...' : 'Sync CDR'}
-              </button>
             </div>
-          )}
-          <div className="search-wrapper">
-            <div className={`search-container ${searchFocused ? 'focused' : ''}`}>
-              <svg className="search-icon" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-              </svg>
-              <input
-                type="text"
-                className="search-input"
-                placeholder="Search calls..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onFocus={() => setSearchFocused(true)}
-                onBlur={() => setSearchFocused(false)}
-                autoComplete="off"
-              />
-              {searchQuery && (
-                <button className="clear-button visible" onClick={() => setSearchQuery('')} aria-label="Clear search">
-                  <svg className="clear-icon" focusable="false" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-                    <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-                  </svg>
+            {cdrStatus?.freepbxCdrSettings?.enabled && (
+              <div className="sync-controls">
+                <div className="sync-info">
+                  <span className="sync-status-text">
+                    {isStatusLoading
+                      ? 'Checking status...'
+                      : cdrStatus?.lastRun?.at
+                        ? `Last sync: ${new Date(cdrStatus.lastRun.at).toLocaleString()}`
+                        : 'No syncs yet'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="sync-btn"
+                  onClick={handleManualSync}
+                  disabled={syncMutation.isPending}
+                >
+                  {syncMutation.isPending ? 'Syncing...' : 'Sync CDR'}
                 </button>
-              )}
-            </div>
+              </div>
+            )}
           </div>
           {syncMessage && (
             <div className="sync-message">
@@ -570,35 +571,30 @@ export default function CallHistoryPage() {
           margin-bottom: 32px;
         }
 
-        .sync-panel {
+        .search-and-sync-row {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          border: 1px solid #e9e9e7;
-          border-radius: 6px;
-          padding: 12px 16px;
-          margin-bottom: 16px;
-          background: #f9f9f7;
           gap: 16px;
+          margin-bottom: 20px;
         }
 
-        .sync-meta {
+        .sync-controls {
           display: flex;
-          flex-direction: column;
-          gap: 4px;
+          align-items: center;
+          gap: 12px;
+          flex-shrink: 0;
         }
 
-        .sync-label {
-          font-size: 11px;
-          font-weight: 600;
-          color: #787774;
-          letter-spacing: 0.4px;
-          text-transform: uppercase;
+        .sync-info {
+          display: flex;
+          align-items: center;
         }
 
-        .sync-value {
+        .sync-status-text {
           font-size: 12px;
-          color: #37352f;
+          color: #787774;
+          white-space: nowrap;
         }
 
         .sync-btn {
@@ -610,7 +606,13 @@ export default function CallHistoryPage() {
           font-weight: 500;
           cursor: pointer;
           color: #37352f;
-          min-width: 120px;
+          min-width: 100px;
+          transition: all 0.15s ease;
+        }
+
+        .sync-btn:hover:not(:disabled) {
+          background: #f7f6f3;
+          border-color: #bab8b4;
         }
 
         .sync-btn:disabled {
@@ -638,71 +640,90 @@ export default function CallHistoryPage() {
         }
         
         .search-wrapper {
+          position: relative;
+          max-width: 420px;
           width: 100%;
-          max-width: 600px;
-          margin-bottom: 20px;
+          flex: 1;
         }
         
         .search-container {
-          position: relative;
           display: flex;
           align-items: center;
-          background: #f7f6f3;
+          background: #ffffff;
+          border: 1px solid #e9e9e7;
           border-radius: 6px;
-          padding: 10px 12px;
-          transition: all 0.2s;
+          padding: 10px 14px;
+          transition: all 0.15s ease;
+          position: relative;
+        }
+        
+        .search-container:hover {
+          background: #ffffff;
+          border-color: #d1d1cf;
         }
         
         .search-container.focused {
           background: #ffffff;
-          box-shadow: 0 0 0 2px #4285f4;
+          border-color: #bab8b4;
+          box-shadow: none;
         }
         
         .search-icon {
-          width: 20px;
-          height: 20px;
-          fill: #9b9a97;
-          margin-right: 8px;
+          width: 18px;
+          height: 18px;
+          color: #787774;
+          margin-right: 10px;
           flex-shrink: 0;
+          fill: currentColor;
+        }
+        
+        .search-container.focused .search-icon {
+          color: #6b6b69;
         }
         
         .search-input {
           flex: 1;
           border: none;
-          background: transparent;
+          outline: none;
           font-size: 14px;
           color: #37352f;
-          outline: none;
+          background: transparent;
+          font-weight: 400;
         }
         
         .search-input::placeholder {
           color: #9b9a97;
+          font-weight: 400;
         }
         
         .clear-button {
-          background: none;
-          border: none;
-          cursor: pointer;
-          padding: 4px;
           display: none;
-          align-items: center;
-          justify-content: center;
-          border-radius: 3px;
-          transition: background 0.15s;
+          width: 20px;
+          height: 20px;
+          border: none;
+          background: none;
+          cursor: pointer;
+          padding: 0;
+          color: #9b9a97;
+          border-radius: 50%;
+          transition: all 0.1s ease;
+        }
+        
+        .clear-button:hover {
+          background: rgba(55, 53, 47, 0.08);
+          color: #37352f;
         }
         
         .clear-button.visible {
           display: flex;
-        }
-        
-        .clear-button:hover {
-          background: #e9e9e7;
+          align-items: center;
+          justify-content: center;
         }
         
         .clear-icon {
           width: 16px;
           height: 16px;
-          fill: #9b9a97;
+          fill: currentColor;
         }
 
         .table-wrapper {
@@ -825,9 +846,9 @@ export default function CallHistoryPage() {
         }
         
         .cell-caller {
-          width: 240px;
-          min-width: 240px;
-          max-width: 240px;
+          width: 180px;
+          min-width: 180px;
+          max-width: 200px;
         }
         
         .caller-info {
@@ -1198,6 +1219,32 @@ export default function CallHistoryPage() {
           font-size: 14px;
           color: #787774;
           max-width: 400px;
+        }
+
+        @media (max-width: 768px) {
+          .search-and-sync-row {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 12px;
+          }
+
+          .search-wrapper {
+            max-width: 100%;
+          }
+
+          .sync-controls {
+            flex-direction: column;
+            align-items: stretch;
+            gap: 8px;
+          }
+
+          .sync-info {
+            justify-content: center;
+          }
+
+          .sync-btn {
+            width: 100%;
+          }
         }
       `}</style>
     </DashboardLayout>

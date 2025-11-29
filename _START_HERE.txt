@@ -1,0 +1,52 @@
+╔══════════════════════════════════════════════════════╗
+║                                                      ║
+║      AI CALL ANALYSIS - QUICK START GUIDE          ║
+║                                                      ║
+╚══════════════════════════════════════════════════════╝
+
+👉 AFTER COMPUTER RESTART - USE THIS:
+
+   ⭐ START_ALL_SAFELY.ps1  (Right-click → Run with PowerShell)
+   
+   OR
+   
+   ⭐ START_ALL_SAFELY.bat  (Double-click)
+
+
+✅ TO CHECK IF SERVERS ARE RUNNING:
+
+   🔍 CHECK_SERVERS.bat  (Double-click)
+
+
+🔄 IF SOMETHING IS BROKEN:
+
+   1. RESTART_EVERYTHING.bat  (Double-click)
+   2. Wait 5 seconds
+   3. START_ALL_SAFELY.ps1  (Double-click)
+
+
+📖 FOR MORE HELP:
+
+   📄 STARTUP_GUIDE.md - Detailed instructions
+   📄 STARTUP_FILES_REFERENCE.md - All startup files explained
+   📄 README.md - Full documentation
+
+
+🌐 ACCESS YOUR APP:
+
+   Frontend: http://localhost:3001
+   Backend:  http://localhost:3000/health
+
+
+═══════════════════════════════════════════════════════
+
+   Keep both terminal windows open while using the app!
+   
+   Both windows show FULL LOGS:
+   ✓ All HTTP requests
+   ✓ Database queries
+   ✓ API calls (OpenAI, Twilio, FreePBX)
+   ✓ Errors and warnings
+   
+═══════════════════════════════════════════════════════
+
