@@ -1,16 +1,52 @@
 import { Call } from '../models/Call.js';
-import { NotFoundError, BadRequestError } from '../utils/errors.js';
+import { NotFoundError, BadRequestError, ForbiddenError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 
 export class CallsController {
   /**
+   * Helper to get target user ID (supports admin access)
+   */
+  static getTargetUserId(req) {
+    const requestedUserId = req.query.userId;
+    
+    if (!requestedUserId) {
+      return req.user.id;
+    }
+    
+    if (!req.user.isAdmin) {
+      throw new ForbiddenError('Only admins can access other users\' calls');
+    }
+    
+    logger.info({ adminId: req.user.id, targetUserId: requestedUserId }, 'Admin accessing user calls');
+    return requestedUserId;
+  }
+
+  /**
    * GET /api/v1/calls
    * List calls for authenticated user
+   * Supports ?userId=xxx query param for admins
    */
   static async listCalls(req, res, next) {
     try {
-      const userId = req.user.id;
-      const { limit = 50, offset = 0, status } = req.query;
+      const userId = CallsController.getTargetUserId(req);
+      const { limit = 50, offset = 0, status, startDate, endDate } = req.query;
+
+      const parseDate = (value, fieldName) => {
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) {
+          throw new BadRequestError(`Invalid ${fieldName} parameter`);
+        }
+        return parsed;
+      };
+
+      const range = {
+        startDate: startDate ? parseDate(startDate, 'startDate') : undefined,
+        endDate: endDate ? parseDate(endDate, 'endDate') : undefined,
+      };
+
+      if (range.startDate && range.endDate && range.startDate > range.endDate) {
+        throw new BadRequestError('startDate must be before endDate');
+      }
 
       console.log(`\n📞 Fetching calls for user: ${userId}`);
 
@@ -18,7 +54,18 @@ export class CallsController {
         limit: parseInt(limit, 10),
         offset: parseInt(offset, 10),
         status,
+        startDate: range.startDate ? range.startDate.toISOString() : undefined,
+        endDate: range.endDate ? range.endDate.toISOString() : undefined,
       });
+
+      // Defense-in-depth: ensure any displayed transcript/analysis is redacted even if older
+      // records were stored before redaction logic existed or if a pipeline skipped it.
+      const { PciRedactionService } = await import('../services/pci-redaction.service.js');
+      const redactedCalls = calls.map((c) => ({
+        ...c,
+        transcript: PciRedactionService.sanitizeTranscriptText(c.transcript || ''),
+        analysis: PciRedactionService.sanitizeTranscriptText(c.analysis || ''),
+      }));
 
       console.log(`✅ Found ${calls.length} calls for user ${userId}`);
 
@@ -40,7 +87,7 @@ export class CallsController {
 
       res.json({
         success: true,
-        data: calls,
+        data: redactedCalls,
         pagination: {
           limit: parseInt(limit, 10),
           offset: parseInt(offset, 10),
@@ -63,10 +110,16 @@ export class CallsController {
       const { id } = req.params;
 
       const call = await Call.findById(id, userId);
+      const { PciRedactionService } = await import('../services/pci-redaction.service.js');
+      const redactedCall = {
+        ...call,
+        transcript: PciRedactionService.sanitizeTranscriptText(call.transcript || ''),
+        analysis: PciRedactionService.sanitizeTranscriptText(call.analysis || ''),
+      };
 
       res.json({
         success: true,
-        data: call,
+        data: redactedCall,
       });
     } catch (error) {
       next(error);
@@ -139,9 +192,9 @@ export class CallsController {
   static async deleteCall(req, res, next) {
     try {
       const { id } = req.params;
-      const userId = req.user.id;
+      const targetUserId = CallsController.getTargetUserId(req);
 
-      logger.info({ callId: id, userId }, 'Deleting call');
+      logger.info({ callId: id, targetUserId, adminId: req.user.id }, 'Deleting call');
 
       // Verify ownership
       const call = await Call.findById(id);
@@ -149,7 +202,7 @@ export class CallsController {
         throw new NotFoundError('Call not found');
       }
 
-      if (call.userId !== userId) {
+      if (call.userId !== targetUserId) {
         throw new BadRequestError('You do not have permission to delete this call');
       }
 
@@ -174,20 +227,20 @@ export class CallsController {
   static async bulkDeleteCalls(req, res, next) {
     try {
       const { callIds } = req.body;
-      const userId = req.user.id;
+      const targetUserId = CallsController.getTargetUserId(req);
 
       if (!Array.isArray(callIds) || callIds.length === 0) {
         throw new BadRequestError('callIds must be a non-empty array');
       }
 
-      logger.info({ count: callIds.length, userId }, 'Bulk deleting calls');
+      logger.info({ count: callIds.length, targetUserId, adminId: req.user.id }, 'Bulk deleting calls');
 
       // Verify ownership of all calls
       const calls = await Promise.all(
         callIds.map(id => Call.findById(id))
       );
 
-      const unauthorizedCalls = calls.filter(call => call && call.userId !== userId);
+      const unauthorizedCalls = calls.filter(call => call && call.userId !== targetUserId);
       if (unauthorizedCalls.length > 0) {
         throw new BadRequestError('You do not have permission to delete some of these calls');
       }

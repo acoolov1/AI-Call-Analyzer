@@ -12,7 +12,7 @@ export function getPool() {
       connectionString: config.database.url,
       max: 20, // Maximum number of clients in the pool
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
+      connectionTimeoutMillis: 10000, // Increased from 2s to 10s for Supabase
     });
 
     pool.on('error', (err) => {

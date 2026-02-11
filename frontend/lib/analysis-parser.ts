@@ -6,6 +6,7 @@ export interface ParsedAnalysis {
   actionItems: string;
   sentiment: string;
   urgentTopics: string;
+  booking: string;
 }
 
 export function parseAnalysis(analysisText: string | undefined | null): ParsedAnalysis {
@@ -13,7 +14,8 @@ export function parseAnalysis(analysisText: string | undefined | null): ParsedAn
     summary: '',
     actionItems: '',
     sentiment: '',
-    urgentTopics: ''
+    urgentTopics: '',
+    booking: '',
   };
   
   if (!analysisText) return sections;
@@ -63,6 +65,15 @@ export function parseAnalysis(analysisText: string | undefined | null): ParsedAn
       currentContent = [];
       continue;
     }
+
+    if (/^6\.\s*\*\*?Booking\*\*?/i.test(line) || /^6\.\s*Booking/i.test(line)) {
+      if (currentSection && currentContent.length > 0) {
+        sections[currentSection] = currentContent.join('\n').trim();
+      }
+      currentSection = 'booking';
+      currentContent = [];
+      continue;
+    }
     
     // If we're in a section and this line isn't a new section header, add to content
     if (currentSection && line && !/^\d+\./.test(line)) {
@@ -109,6 +120,27 @@ export function parseAnalysis(analysisText: string | undefined | null): ParsedAn
     if (urgentMatch) {
       sections.urgentTopics = urgentMatch[1].trim().replace(/\*\*/g, '');
     }
+
+    const bookingMatch = analysisText.match(/6\.\s*\*\*?Booking\*\*?[:\s]*\n?(.*?)(?=\n\s*\d\.|$)/is);
+    if (bookingMatch) {
+      sections.booking = bookingMatch[1].trim().replace(/\*\*/g, '');
+    }
+  }
+
+  // Normalize booking to: "Booked" | "Not Booked" | "Rescheduled" | "Canceled" | ""
+  const rawBooking = (sections.booking || '').trim();
+  if (!rawBooking) {
+    sections.booking = '';
+  } else if (/^booked$/i.test(rawBooking)) {
+    sections.booking = 'Booked';
+  } else if (/^not\s*booked$/i.test(rawBooking)) {
+    sections.booking = 'Not Booked';
+  } else if (/^rescheduled$/i.test(rawBooking)) {
+    sections.booking = 'Rescheduled';
+  } else if (/^canceled$/i.test(rawBooking)) {
+    sections.booking = 'Canceled';
+  } else {
+    sections.booking = '';
   }
   
   return sections;

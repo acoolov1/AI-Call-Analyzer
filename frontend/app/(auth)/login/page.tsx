@@ -92,6 +92,11 @@ export default function LoginPage() {
             {loading ? 'Signing in...' : 'Sign in'}
           </button>
           <div className="text-center">
+            <a href="/forgot-password" className="text-sm text-indigo-600 hover:text-indigo-900">
+              Forgot password?
+            </a>
+          </div>
+          <div className="text-center">
             <a href="/signup" className="text-sm text-indigo-600 hover:text-indigo-900">
               Don't have an account? Sign up
             </a>

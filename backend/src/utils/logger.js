@@ -17,17 +17,7 @@ const createLoggerInstance = () => {
 // Use simple logger - always works, always visible
 export const logger = createLoggerInstance();
 
-// Log startup info - always show
-console.log(`\n═══════════════════════════════════════════════════════════`);
-console.log(`🔍 DEBUG MODE ENABLED - SIMPLE LOGGER`);
-console.log(`🔍 All logs will be shown directly to console`);
-console.log(`═══════════════════════════════════════════════════════════\n`);
-
-// Test logging
-logger.info('Logger test: INFO message');
-logger.debug('Logger test: DEBUG message');
-logger.trace('Logger test: TRACE message');
-console.log('Console.log test: This should always be visible\n');
+// NOTE: Avoid startup "test" logs and banners to keep production logs clean.
 
 // Helper to create child logger with context (for compatibility)
 export function createLogger(context = {}) {

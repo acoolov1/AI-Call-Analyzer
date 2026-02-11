@@ -18,13 +18,50 @@ export class OpenAIService {
       
       if (adminUserId) {
         const settings = await User.getOpenAISettingsRaw(adminUserId);
+        logger.debug({ hasApiKey: Boolean(settings?.api_key) }, 'Loaded platform OpenAI settings');
         return settings;
       }
-      
       return null;
     } catch (error) {
       logger.warn({ error: error.message }, 'Could not fetch platform OpenAI settings');
       return null;
+    }
+  }
+
+  /**
+   * Get OpenAI settings with user-specific prompt override
+   * Uses superadmin's API key/models but user's custom prompt
+   * @param {string} userId - The user ID to get custom prompt from
+   * @returns {Object} Combined settings (admin's API key + user's prompt)
+   */
+  static async getSettingsForUser(userId) {
+    try {
+      const { User } = await import('../models/User.js');
+      
+      // Get admin settings for API key and models
+      const adminSettings = await this.getPlatformSettings();
+      
+      if (!adminSettings) {
+        logger.warn('No admin OpenAI settings found');
+        return null;
+      }
+      
+      // Get user's custom prompt if they have one
+      if (userId) {
+        const userSettings = await User.getOpenAISettingsRaw(userId);
+        
+        // Merge: Use admin's API key and models, but user's custom prompt
+        return {
+          ...adminSettings, // API key, models, enabled from admin
+          analysis_prompt: userSettings?.analysis_prompt || adminSettings.analysis_prompt,
+          analysisPrompt: userSettings?.analysis_prompt || adminSettings.analysis_prompt,
+        };
+      }
+      
+      return adminSettings;
+    } catch (error) {
+      logger.error({ error: error.message, userId }, 'Error getting OpenAI settings for user');
+      return await this.getPlatformSettings(); // Fallback to admin settings
     }
   }
   /**
@@ -35,12 +72,11 @@ export class OpenAIService {
   static getClient(openaiSettings = null) {
     // REQUIRE admin to configure API key in UI settings - NO fallback to env
     if (!openaiSettings?.api_key) {
-      console.log('❌ OpenAI not configured - Admin must configure API key in /settings/openai');
       throw new Error('OpenAI is not configured. Administrator must configure API key in settings.');
     }
     
     const apiKey = openaiSettings.api_key;
-    console.log(`✅ Using OpenAI API key from: ADMIN SETTINGS (${apiKey.substring(0, 10)}...)`);
+    // Never log API keys or prefixes (security).
     logger.info('Using admin-configured OpenAI API key');
     
     return new OpenAI({ apiKey });
@@ -123,16 +159,20 @@ export class OpenAIService {
         logger.debug({ tempPath: actualFilePath, size: audioBuffer.length }, 'Created temp file for transcription');
       }
 
-      console.log(`🎤 Calling OpenAI Whisper API (${whisperModel})...`);
       logger.info({ fileSize: audioBuffer.length, filePath: actualFilePath, model: whisperModel }, 'Transcribing audio with Whisper');
       
       const transcription = await openai.audio.transcriptions.create({
         file: fileToUse,
         model: whisperModel,
+        response_format: 'verbose_json',
+        timestamp_granularities: ['word'],
       });
 
-      console.log(`✅ Transcription received: ${transcription.text.length} characters`);
-      logger.info({ textLength: transcription.text.length }, 'Transcription completed');
+      const transcriptText = transcription.text || '';
+      const transcriptWords = transcription.words || [];
+      const transcriptSegments = transcription.segments || [];
+
+      logger.info({ textLength: transcriptText.length, words: transcriptWords.length }, 'Transcription completed');
 
       // Clean up temp file (only if we created it)
       if (shouldCleanup && actualFilePath && fs.existsSync(actualFilePath)) {
@@ -140,15 +180,12 @@ export class OpenAIService {
         logger.debug({ filePath: actualFilePath }, 'Temp file deleted');
       }
 
-      return transcription.text;
+      return {
+        text: transcriptText,
+        words: transcriptWords,
+        segments: transcriptSegments,
+      };
     } catch (error) {
-      console.error('❌ Transcription error:', error.message);
-      if (error.status) {
-        console.error(`   Status: ${error.status}`);
-      }
-      if (error.code) {
-        console.error(`   Code: ${error.code}`);
-      }
       logger.error({ 
         error: error.message, 
         stack: error.stack,
@@ -189,7 +226,13 @@ export class OpenAIService {
         logger.info({ model: gptModel }, 'Using default GPT model');
       }
       
-      const analysisPrompt = `
+      // Check for custom analysis prompt in settings
+      let analysisPrompt = openaiSettings?.analysis_prompt || openaiSettings?.analysisPrompt;
+      
+      if (!analysisPrompt) {
+        // Use default prompt if no custom prompt is set
+        logger.info('Using default analysis prompt');
+        analysisPrompt = `
 You are an AI call analyst. Using the transcript below, generate a structured report.
 
 TRANSCRIPT:
@@ -198,34 +241,56 @@ TRANSCRIPT:
 IMPORTANT: Format your response EXACTLY as follows, with each section on a new line starting with the number:
 
 1. **Full Transcript**
-[Print the full transcript text exactly as provided]
+[Print the full transcript text exactly as provided. Print it as a dialog with each participant on a new line.]
 
 2. **Summary**
 [2-3 sentence summary of the conversation]
 
 3. **Action Items**
-[Bulleted list of action items, one per line starting with - or *. If an action item is urgent, include the word "urgent" or "URGENT" in that item]
+[Bulleted list of short action items, one per line starting with - ]
 
 4. **Sentiment**
-[One word or short phrase: positive, negative, or neutral]
+[One word: positive, negative, or neutral]
 
 5. **Urgent Topics**
 [List any urgent topics, or "None" if there are none]
 
-Make sure each section starts with its number (2., 3., 4., 5.) on a new line and is clearly separated.
+6. **Booking**
+[If this call contains an actual conversation of a person trying to book a new booking and is successful, label it Booked. I this call contains an actual conversation of a person trying to book but the booking is unsuccessful, label it Not Booked. If this call contains a conversation of a person rescheduling a booking, label it Rescheduled. If this call contains a conversation of a person canceling a booking, label it Canceled. If this call is related to something other than booking, leave this value blank.]
+
+Make sure each section starts with its number (2., 3., 4., 5., 6.) on a new line and is clearly separated.
 `;
+      } else {
+        logger.info('Using custom analysis prompt from settings');
+      }
+      
+      // Replace ${transcript} placeholder with actual transcript
+      const finalPrompt = analysisPrompt.replace(/\$\{transcript\}/g, transcript);
 
       logger.info({ model: gptModel }, 'Analyzing transcript with GPT');
       
       const response = await openai.chat.completions.create({
         model: gptModel,
-        messages: [{ role: 'user', content: analysisPrompt }],
+        messages: [{ role: 'user', content: finalPrompt }],
       });
 
-      const analysisText = response.choices[0].message.content;
-      logger.debug({ analysisLength: analysisText.length }, 'Analysis completed');
+      const analysisText = response?.choices?.[0]?.message?.content || '';
+      const usage = response?.usage || null;
+      const usedModel = response?.model || gptModel;
+      logger.debug(
+        {
+          analysisLength: analysisText.length,
+          model: usedModel,
+          usage,
+        },
+        'Analysis completed'
+      );
       
-      return analysisText;
+      return {
+        text: analysisText,
+        model: usedModel,
+        usage,
+      };
     } catch (error) {
       logger.error({ error: error.message }, 'Error analyzing transcript');
       throw error;
@@ -241,6 +306,7 @@ Make sure each section starts with its number (2., 3., 4., 5.) on a new line and
       actionItems: [],
       sentiment: 'neutral',
       urgentTopics: [],
+      booking: '',
     };
 
     if (!analysisText) return sections;
@@ -288,6 +354,15 @@ Make sure each section starts with its number (2., 3., 4., 5.) on a new line and
         continue;
       }
 
+      if (/^6\.\s*\*\*?Booking\*\*?/i.test(line) || /^6\.\s*Booking/i.test(line)) {
+        if (currentSection && currentContent.length > 0) {
+          sections[currentSection] = currentContent.join('\n').trim();
+        }
+        currentSection = 'booking';
+        currentContent = [];
+        continue;
+      }
+
       if (currentSection && line && !/^\d+\./.test(line)) {
         const cleanLine = line.replace(/\*\*/g, '').replace(/^[-*•]\s*/, '').trim();
         if (cleanLine) {
@@ -327,6 +402,25 @@ Make sure each section starts with its number (2., 3., 4., 5.) on a new line and
         .map(topic => topic.replace(/^[-*•]\s*/, '').trim())
         .filter(topic => topic.length > 0 && topic.toLowerCase() !== 'none');
       sections.urgentTopics = topics;
+    }
+
+    // Process booking
+    if (typeof sections.booking === 'string') {
+      const raw = sections.booking.trim();
+      if (!raw) {
+        sections.booking = '';
+      } else if (/^booked$/i.test(raw)) {
+        sections.booking = 'Booked';
+      } else if (/^not\s*booked$/i.test(raw)) {
+        sections.booking = 'Not Booked';
+      } else if (/^rescheduled$/i.test(raw)) {
+        sections.booking = 'Rescheduled';
+      } else if (/^canceled$/i.test(raw)) {
+        sections.booking = 'Canceled';
+      } else {
+        // If model outputs something unexpected, keep empty to avoid false positives.
+        sections.booking = '';
+      }
     }
 
     return sections;

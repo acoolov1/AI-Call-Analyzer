@@ -81,7 +81,6 @@ export async function initializeWorkers() {
   transcriptionWorker = new Worker(
     'transcription',
     async (job) => {
-      const { CallProcessingService } = await import('../services/call-processing.service.js');
       const { callId, recordingUrl } = job.data;
       
       logger.info({ jobId: job.id, callId }, 'Processing transcription job');
@@ -96,17 +95,78 @@ export async function initializeWorkers() {
       const fs = await import('fs');
       
       const { OpenAIService: OpenAIServiceForTranscribe } = await import('../services/openai.service.js');
+      const { PciRedactionService } = await import('../services/pci-redaction.service.js');
+      const { Call } = await import('../models/Call.js');
+      const { REDACTION_STATUS } = await import('../utils/constants.js');
       
       const tempFilePath = path.join(process.cwd(), `temp-recording-${callId}.wav`);
       const audioBuffer = await TwilioService.downloadRecording(recordingUrl);
-      const transcript = await OpenAIServiceForTranscribe.transcribeAudio(audioBuffer, tempFilePath, openaiSettings);
+      const transcription = await OpenAIServiceForTranscribe.transcribeAudio(audioBuffer, tempFilePath, openaiSettings);
+      const transcriptText = transcription?.text || '';
+
+      // Apply PII/PCI transcript sanitization + (optional) audio muting
+      const sanitizedTranscript = PciRedactionService.sanitizeTranscriptText(transcriptText);
+      const detection = PciRedactionService.detectSensitiveSpans(transcriptText, transcription?.words || []);
+      
+      // Check if text was sanitized (compare before/after)
+      const textWasSanitized = sanitizedTranscript !== transcriptText;
+
+      if (detection.spans.length > 0) {
+        try {
+          // Mute sensitive spans in audio and store locally so /audio/:id can serve redacted audio for Twilio calls.
+          const redactionResult = await PciRedactionService.redactAudioWithFfmpeg(audioBuffer, detection.spans);
+
+          const redactedDir = path.join(process.cwd(), 'redacted-audio');
+          if (!fs.existsSync(redactedDir)) {
+            fs.mkdirSync(redactedDir, { recursive: true });
+          }
+          const redactedPath = path.join(redactedDir, `${callId}.wav`);
+          fs.writeFileSync(redactedPath, redactionResult.buffer);
+
+          const cleanSegments = detection.spans.map(s => ({
+            start: Number(s.start) || 0,
+            end: Number(s.end) || 0,
+            reason: String(s.reason || 'unknown'),
+          }));
+
+          await Call.update(callId, null, {
+            redactionStatus: REDACTION_STATUS.COMPLETED,
+            redacted: true,
+            redactedSegments: JSON.stringify(cleanSegments),
+            redactedAt: new Date().toISOString(),
+            // For Twilio calls, store local path to serve muted audio
+            recordingPath: redactedPath,
+          });
+        } catch (error) {
+          logger.error({ error: error.message, callId }, 'Redaction/muting failed in transcription worker');
+          await Call.update(callId, null, {
+            redactionStatus: REDACTION_STATUS.FAILED,
+          }).catch(() => {});
+        }
+      } else if (textWasSanitized) {
+        // No audio spans, but text was sanitized (e.g., DOB with no detectable audio timeline)
+        await Call.update(callId, null, {
+          redactionStatus: REDACTION_STATUS.COMPLETED,
+          redacted: true,
+          redactedSegments: JSON.stringify([]),
+          redactedAt: new Date().toISOString(),
+        }).catch(() => {});
+      } else {
+        // Mark as not needed (no redaction required)
+        await Call.update(callId, null, {
+          redactionStatus: REDACTION_STATUS.NOT_NEEDED,
+          redacted: false,
+          redactedSegments: JSON.stringify([]),
+          redactedAt: null,
+        }).catch(() => {});
+      }
       
       // Clean up temp file
       if (fs.existsSync(tempFilePath)) {
         fs.unlinkSync(tempFilePath);
       }
       
-      return { transcript };
+      return { transcript: sanitizedTranscript, transcriptionMeta: { words: transcription?.words || [], segments: transcription?.segments || [] } };
     },
     {
       connection,
@@ -138,8 +198,15 @@ export async function initializeWorkers() {
       const openaiSettings = await OpenAIService.getPlatformSettings();
       
       // Analyze transcript
-      const analysis = await OpenAIService.analyzeTranscript(transcript, openaiSettings);
-      const parsed = OpenAIService.parseAnalysis(analysis);
+      const analysisResult = await OpenAIService.analyzeTranscript(transcript, openaiSettings);
+      const analysisText =
+        typeof analysisResult === 'string' ? analysisResult : (analysisResult?.text || '');
+      const parsed = OpenAIService.parseAnalysis(analysisText);
+      const usage = typeof analysisResult === 'string' ? null : (analysisResult?.usage || null);
+      const usedModel = typeof analysisResult === 'string' ? null : (analysisResult?.model || null);
+      const gptInputTokens = usage?.prompt_tokens ?? null;
+      const gptOutputTokens = usage?.completion_tokens ?? null;
+      const gptTotalTokens = usage?.total_tokens ?? null;
       
       // Update call and save metadata
       const { Call } = await import('../models/Call.js');
@@ -147,14 +214,18 @@ export async function initializeWorkers() {
       
       await Call.update(callId, null, {
         transcript,
-        analysis,
+        analysis: analysisText,
         status: CALL_STATUS.COMPLETED,
         processedAt: new Date().toISOString(),
+        ...(usedModel ? { gptModel: usedModel } : {}),
+        ...(Number.isFinite(gptInputTokens) ? { gptInputTokens } : {}),
+        ...(Number.isFinite(gptOutputTokens) ? { gptOutputTokens } : {}),
+        ...(Number.isFinite(gptTotalTokens) ? { gptTotalTokens } : {}),
       });
       
       await CallProcessingService.saveCallMetadata(callId, parsed);
       
-      return { analysis, metadata: parsed };
+      return { analysis: analysisText, metadata: parsed };
     },
     {
       connection,
@@ -220,18 +291,29 @@ export async function queueAnalysis(callId, transcript) {
     const { CallProcessingService } = await import('../services/call-processing.service.js');
     const { CALL_STATUS } = await import('../utils/constants.js');
     
-    const analysis = await OpenAIService.analyzeTranscript(transcript);
-    const parsed = OpenAIService.parseAnalysis(analysis);
+    const analysisResult = await OpenAIService.analyzeTranscript(transcript);
+    const analysisText =
+      typeof analysisResult === 'string' ? analysisResult : (analysisResult?.text || '');
+    const parsed = OpenAIService.parseAnalysis(analysisText);
+    const usage = typeof analysisResult === 'string' ? null : (analysisResult?.usage || null);
+    const usedModel = typeof analysisResult === 'string' ? null : (analysisResult?.model || null);
+    const gptInputTokens = usage?.prompt_tokens ?? null;
+    const gptOutputTokens = usage?.completion_tokens ?? null;
+    const gptTotalTokens = usage?.total_tokens ?? null;
     
     await Call.update(callId, null, {
       transcript,
-      analysis,
+      analysis: analysisText,
       status: CALL_STATUS.COMPLETED,
       processedAt: new Date().toISOString(),
+      ...(usedModel ? { gptModel: usedModel } : {}),
+      ...(Number.isFinite(gptInputTokens) ? { gptInputTokens } : {}),
+      ...(Number.isFinite(gptOutputTokens) ? { gptOutputTokens } : {}),
+      ...(Number.isFinite(gptTotalTokens) ? { gptTotalTokens } : {}),
     });
     
     await CallProcessingService.saveCallMetadata(callId, parsed);
-    return { analysis, metadata: parsed };
+    return { analysis: analysisText, metadata: parsed };
   }
   
   const job = await analysisQueue.add(

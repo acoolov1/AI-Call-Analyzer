@@ -1,6 +1,6 @@
-# FreePBX Configuration Guide for ARI Integration
+# FreePBX Configuration Guide for MySQL CDR + SSH Integration
 
-This guide provides step-by-step instructions for configuring FreePBX/Asterisk to enable the AI Call Analysis application to connect via ARI (Asterisk REST Interface) and download call recordings.
+This guide provides step-by-step instructions for configuring FreePBX to enable the AI Call Analysis application to fetch call records via MySQL and download/upload recordings via SSH.
 
 ## Prerequisites
 
@@ -11,309 +11,325 @@ This guide provides step-by-step instructions for configuring FreePBX/Asterisk t
 
 ## Configuration Steps
 
-### Step 1: Configure ARI User Credentials
+### Step 1: Configure MySQL CDR Access
 
-Edit `/etc/asterisk/ari.conf` and configure the ARI user:
+Create a dedicated MySQL user for the application to access the Call Detail Records database:
 
 ```bash
-nano /etc/asterisk/ari.conf
+mysql -u root -p
 ```
 
-Add or modify the following sections:
+Run the following SQL commands:
 
-```ini
-[general]
-allowed_origins = *
-recording_directory = /var/spool/asterisk/monitor
+```sql
+-- Create user for both localhost and remote access
+CREATE USER IF NOT EXISTS 'aiapp'@'localhost' IDENTIFIED BY 'YOUR_SECURE_PASSWORD';
+CREATE USER IF NOT EXISTS 'aiapp'@'%' IDENTIFIED BY 'YOUR_SECURE_PASSWORD';
 
-[connex]
-type = user
-read_only = no
-password = YOUR_SECURE_PASSWORD_HERE
-password_format = plain
+-- Grant SELECT privileges on CDR database
+GRANT SELECT ON asteriskcdrdb.* TO 'aiapp'@'localhost';
+GRANT SELECT ON asteriskcdrdb.* TO 'aiapp'@'%';
+
+-- Apply changes
+FLUSH PRIVILEGES;
+
+-- Verify user was created
+SELECT user, host FROM mysql.user WHERE user = 'aiapp';
+
+-- Test the user can access CDR data
+SELECT COUNT(*) FROM asteriskcdrdb.cdr;
 ```
 
 **Important Notes:**
-- Replace `YOUR_SECURE_PASSWORD_HERE` with a strong password
-- The username `[connex]` can be changed to any name you prefer
-- `allowed_origins = *` must be in the `[general]` section (Asterisk 16 requirement)
-- `recording_directory` points to where call recordings are stored
+- Replace `YOUR_SECURE_PASSWORD` with a strong password (12+ characters recommended)
+- The username `aiapp` can be changed to any name you prefer
+- `'aiapp'@'%'` allows connections from any IP; restrict to specific IP for better security
 
-### Step 2: Configure HTTP Server for External Access
+### Step 2: Configure MySQL for Remote Access
 
-The Asterisk HTTP server needs to listen on a public IP (not just localhost) for external ARI connections.
-
-**Option A: Using http_custom.conf (Recommended)**
-
-Create/edit `/etc/asterisk/http_custom.conf`:
+Edit MySQL configuration to allow remote connections:
 
 ```bash
-nano /etc/asterisk/http_custom.conf
+nano /etc/my.cnf.d/server.cnf
 ```
 
-Add the following:
+Find the `[mysqld]` section and ensure `bind-address` is set correctly:
 
 ```ini
-[general]
-bindaddr=0.0.0.0
+[mysqld]
+bind-address = 0.0.0.0
 ```
 
-This overrides the `bindaddr` setting from `http_additional.conf` without FreePBX reverting it.
+If `bind-address` is commented out or set to `127.0.0.1`, change it to `0.0.0.0`.
 
-**Option B: Verify http_additional.conf (if http_custom.conf doesn't work)**
-
-Check `/etc/asterisk/http_additional.conf`:
+Restart MySQL to apply changes:
 
 ```bash
-cat /etc/asterisk/http_additional.conf
+systemctl restart mariadb
 ```
 
-If `bindaddr` is set to a specific IP or `::`, ensure your firewall allows connections to port 8088 (HTTP) and 8089 (HTTPS).
-
-**Important:** Do NOT set `bindaddr` to a specific IP in `http_additional.conf` if it causes SIP/PJSIP transport binding conflicts. Use `http_custom.conf` to override it instead.
-
-### Step 3: Configure Recording Directory Symlink
-
-ARI expects recordings in `/var/spool/asterisk/recording`, but FreePBX stores them in `/var/spool/asterisk/monitor`. Create a symlink:
+Verify MySQL is listening on all interfaces:
 
 ```bash
-# Remove any existing recording directory or symlink
-rm -rf /var/spool/asterisk/recording
-
-# Create symlink pointing to monitor directory
-ln -s /var/spool/asterisk/monitor /var/spool/asterisk/recording
-
-# Verify the symlink
-ls -la /var/spool/asterisk/ | grep recording
-readlink /var/spool/asterisk/recording
+netstat -tulpn | grep 3306
 ```
 
-Expected output:
-```
-lrwxrwxrwx   1 root     root         27 Nov 23 18:11 recording -> /var/spool/asterisk/monitor
-/var/spool/asterisk/monitor
-```
+Expected output should show `0.0.0.0:3306` (not `127.0.0.1:3306`).
 
-### Step 4: Load ARI Modules
+### Step 3: Configure Firewall for MySQL
 
-Ensure all required ARI modules are loaded in Asterisk:
+Open MySQL port in the firewall:
 
 ```bash
-# Enter Asterisk CLI
-asterisk -rvvv
-
-# Load ARI modules
-module load res_ari.so
-module load res_ari_recordings.so
-module load res_ari_channels.so
-module load res_ari_bridges.so
-
-# Verify modules are loaded
-module show like ari
-
-# Exit CLI
-exit
-```
-
-Expected output should show all `res_ari*.so` modules as "Running".
-
-### Step 5: Reload Asterisk Configuration
-
-Apply all configuration changes:
-
-```bash
-fwconsole reload
-```
-
-Alternatively, reload specific modules:
-
-```bash
-asterisk -rx "module reload res_http.so"
-asterisk -rx "module reload res_ari.so"
-asterisk -rx "module unload res_ari_recordings.so"
-asterisk -rx "module load res_ari_recordings.so"
-```
-
-### Step 6: Configure Firewall Rules
-
-Ensure the firewall allows inbound connections to ARI ports:
-
-```bash
-# Add firewall rules for ARI HTTP/HTTPS
-firewall-cmd --permanent --add-port=8088/tcp
-firewall-cmd --permanent --add-port=8089/tcp
+firewall-cmd --permanent --add-port=3306/tcp
 firewall-cmd --reload
-
-# Or use FreePBX firewall command
-fwconsole firewall --add=8088/tcp
-fwconsole firewall --add=8089/tcp
 ```
 
-**Important:** If your application server has a different IP, add it to the FreePBX firewall trusted list.
+Or restrict to your application server's specific IP:
 
-### Step 7: Verify Configuration
-
-Test the ARI connection from your application server or local machine:
-
-**Test 1: List Recordings**
 ```bash
-curl -u "connex:YOUR_PASSWORD" http://YOUR_FREEPBX_IP:8088/ari/recordings/stored
+firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="YOUR_APP_SERVER_IP" port protocol="tcp" port="3306" accept'
+firewall-cmd --reload
 ```
 
-Expected output (JSON array of recordings):
-```json
-[
-  {
-    "name": "2025/11/23/out-7175882255-200-20251123-175133-1763938293.6",
-    "format": "wav"
-  }
-]
-```
+### Step 4: Test MySQL Connection
 
-**Test 2: Download a Recording**
+From your application server (or another machine), test the MySQL connection:
+
 ```bash
-curl -u "connex:YOUR_PASSWORD" "http://YOUR_FREEPBX_IP:8088/ari/recordings/stored/2025%2F11%2F23%2Fout-7175882255-200-20251123-175133-1763938293.6/file" -o test.wav
+mysql -u aiapp -p -h YOUR_FREEPBX_IP asteriskcdrdb
 ```
 
-The downloaded file should be a valid WAV file (100KB+), not a 33-byte JSON error.
+Enter the password when prompted. Once connected, verify you can query CDR data:
 
-### Step 8: Configure Application Frontend
+```sql
+SELECT COUNT(*) FROM cdr;
+SELECT calldate, src, dst, disposition, recordingfile FROM cdr ORDER BY calldate DESC LIMIT 5;
+```
+
+You should see your recent call records.
+
+### Step 5: Configure SSH Access
+
+The application uses SSH/SFTP to download recordings and upload redacted versions.
+
+**Option A: Use root account (simpler but less secure)**
+
+Ensure SSH is enabled and accessible:
+
+```bash
+systemctl status sshd
+systemctl enable sshd
+systemctl start sshd
+```
+
+If using a custom SSH port, note it for later.
+
+**Option B: Create dedicated user (recommended)**
+
+```bash
+# Create a user for the application
+useradd -m -s /bin/bash callanalyzer
+
+# Set password
+passwd callanalyzer
+
+# Grant access to recordings directory
+usermod -aG asterisk callanalyzer
+chown -R asterisk:asterisk /var/spool/asterisk/monitor
+chmod g+rwx /var/spool/asterisk/monitor
+```
+
+### Step 6: Configure Firewall for SSH
+
+Ensure SSH port is open:
+
+```bash
+firewall-cmd --permanent --add-service=ssh
+firewall-cmd --reload
+```
+
+Or if using a custom port:
+
+```bash
+firewall-cmd --permanent --add-port=YOUR_SSH_PORT/tcp
+firewall-cmd --reload
+```
+
+### Step 7: Test SSH Connection
+
+From your application server, test SSH connection:
+
+```bash
+ssh root@YOUR_FREEPBX_IP
+# or
+ssh -p YOUR_SSH_PORT root@YOUR_FREEPBX_IP
+```
+
+Once connected, verify you can access recordings:
+
+```bash
+ls -la /var/spool/asterisk/monitor/
+```
+
+You should see your call recordings organized by date.
+
+### Step 8: Configure Application Settings
 
 In your AI Call Analysis application:
 
 1. Navigate to **Settings → FreePBX Integration**
-2. Enter the following credentials:
-   - **Host:** `YOUR_FREEPBX_IP` (e.g., `140.82.47.197`)
-   - **Port:** `8088` (HTTP) or `8089` (HTTPS)
-   - **Username:** `connex` (or whatever you configured in Step 1)
-   - **Password:** Your secure password from Step 1
-   - **Use TLS:** Enable if using port 8089
-   - **Sync Interval:** `10` minutes (or your preference)
-3. Click **Test Connection** to verify
-4. Click **Save**
 
-### Step 9: Test Manual Sync
+2. Configure **MySQL Database Access (CDR)**:
+   - **MySQL Host:** `YOUR_FREEPBX_IP` (e.g., `140.82.47.197`)
+   - **MySQL Port:** `3306` (default)
+   - **MySQL Username:** `aiapp` (or whatever you configured in Step 1)
+   - **MySQL Password:** Your password from Step 1
+   - **Database Name:** `asteriskcdrdb` (default)
 
-Click **Sync FreePBX** in the application to manually trigger a recording sync. New recordings should appear in the call list with:
-- Proper caller ID
-- Correct call duration
-- Full AI transcript
-- Sentiment analysis
+3. Click **Test MySQL** to verify connection
+
+4. Configure **SSH Access (Recording Download & Redaction)**:
+   - **SSH Host:** `YOUR_FREEPBX_IP`
+   - **SSH Port:** `22` (or your custom port)
+   - **SSH Username:** `root` or `callanalyzer`
+   - **SSH Password** OR **SSH Private Key**
+   - **Recordings Base Path:** `/var/spool/asterisk/monitor`
+
+5. Click **Test SSH** to verify connection
+
+6. Click **Save**
+
+### Step 9: Test Recording Sync
+
+1. Make a test call to FreePBX and ensure it's recorded
+2. In the application, navigate to **Call History** page
+3. Click **Refresh** to manually trigger a sync
+4. Verify the new call appears with:
+   - Proper caller ID
+   - Audio playback (via SSH download)
+   - AI transcript
+   - Sentiment analysis
 
 ## Troubleshooting
 
-### Issue: "Connection Refused" Error
+### Issue: "Access denied" for MySQL user
 
-**Cause:** Asterisk HTTP server is not listening on the public IP.
+**Cause:** User doesn't exist or password is incorrect.
 
-**Fix:** Verify `bindaddr=0.0.0.0` in `/etc/asterisk/http_custom.conf` and reload:
+**Fix:** Verify user credentials:
 ```bash
-fwconsole reload
-asterisk -rx "http show status"
+mysql -u root -p
+SELECT user, host FROM mysql.user WHERE user = 'aiapp';
 ```
 
-Expected output should show:
-```
-Server Enabled and Bound to 0.0.0.0:8088
-```
+If user doesn't exist, recreate it (see Step 1).
 
-### Issue: "401 Unauthorized" Error
+### Issue: "Can't connect to MySQL server"
 
-**Cause:** Incorrect ARI username/password.
-
-**Fix:** Verify credentials in `/etc/asterisk/ari.conf` and reload:
-```bash
-cat /etc/asterisk/ari.conf | grep -A5 "\[connex\]"
-fwconsole reload
-```
-
-### Issue: "404 Not Found" for /ari/recordings/stored
-
-**Cause:** ARI modules are not loaded.
-
-**Fix:** Load ARI modules (see Step 4) and verify:
-```bash
-asterisk -rx "module show like ari"
-```
-
-### Issue: "Recording not found" when downloading
-
-**Cause:** Recording symlink is incorrect or ARI is looking in the wrong directory.
+**Cause:** MySQL is not listening on `0.0.0.0` or firewall is blocking.
 
 **Fix:** 
-1. Verify symlink: `readlink /var/spool/asterisk/recording`
-2. Should output: `/var/spool/asterisk/monitor`
-3. If not, recreate symlink (see Step 3)
-4. Reload ARI recordings module:
+1. Check MySQL bind address:
+   ```bash
+   grep bind-address /etc/my.cnf.d/server.cnf
+   netstat -tulpn | grep 3306
+   ```
+2. Should show `0.0.0.0:3306`, not `127.0.0.1:3306`
+3. Check firewall:
+   ```bash
+   firewall-cmd --list-ports | grep 3306
+   ```
+
+### Issue: "SSH connection refused"
+
+**Cause:** SSH is not running or firewall is blocking.
+
+**Fix:**
+1. Verify SSH is running:
+   ```bash
+   systemctl status sshd
+   ```
+2. Check firewall:
+   ```bash
+   firewall-cmd --list-services | grep ssh
+   ```
+
+### Issue: "Permission denied" when accessing recordings via SSH
+
+**Cause:** SSH user doesn't have read access to `/var/spool/asterisk/monitor`.
+
+**Fix:**
 ```bash
-asterisk -rx "module unload res_ari_recordings.so"
-asterisk -rx "module load res_ari_recordings.so"
+# Add user to asterisk group
+usermod -aG asterisk YOUR_SSH_USER
+
+# Ensure directory permissions allow group read
+chmod g+rwx /var/spool/asterisk/monitor
 ```
 
-### Issue: Inbound calls stopped working after configuration
+### Issue: SSH connection works but can't upload redacted recordings
 
-**Cause:** `bindaddr` change in `http.conf` caused PJSIP transport binding conflict.
+**Cause:** SSH user doesn't have write access.
 
-**Fix:** Use `http_custom.conf` to override bindaddr instead of editing `http_additional.conf`:
+**Fix:**
 ```bash
-echo -e "[general]\nbindaddr=0.0.0.0" > /etc/asterisk/http_custom.conf
-fwconsole reload
+# Ensure user has write access
+chmod g+w /var/spool/asterisk/monitor
+chown -R asterisk:asterisk /var/spool/asterisk/monitor
 ```
 
-Verify PJSIP transports are bound correctly:
-```bash
-asterisk -rx "pjsip show transports"
-```
+### Issue: No recordings in sync
 
-Check that your SIP port (e.g., 57293) shows in netstat:
-```bash
-netstat -tulpn | grep asterisk | grep YOUR_SIP_PORT
-```
+**Cause:** FreePBX is not recording calls.
 
-### Issue: Recordings show 0 seconds and no transcript
-
-**Cause:** Backend failed to download the recording from FreePBX.
-
-**Fix:** Check backend logs for errors, verify:
-1. ARI connection works (curl test from Step 7)
-2. Recording symlink is correct
-3. Firewall allows connections
-4. Restart backend and click "Sync FreePBX" again
+**Fix:**
+1. Verify recording is enabled in FreePBX:
+   - Navigate to **Admin → System Recordings**
+   - Check inbound/outbound route recording settings
+2. Make a test call and verify recording file exists:
+   ```bash
+   ls -ltr /var/spool/asterisk/monitor/ | tail -10
+   ```
 
 ## Files Modified Summary
 
 | File | Purpose | Key Changes |
 |------|---------|-------------|
-| `/etc/asterisk/ari.conf` | ARI user credentials | Added `[connex]` user, `allowed_origins`, `recording_directory` |
-| `/etc/asterisk/http_custom.conf` | HTTP server bind address | Set `bindaddr=0.0.0.0` for external access |
-| `/var/spool/asterisk/recording` | Recording directory symlink | Created symlink to `/var/spool/asterisk/monitor` |
+| `/etc/my.cnf.d/server.cnf` | MySQL bind address | Set `bindaddr=0.0.0.0` for remote access |
+| MySQL user table | CDR database access | Created `aiapp` user with SELECT privileges |
 
 ## Security Recommendations
 
-1. **Use strong passwords:** The ARI password should be at least 20 characters with mixed case, numbers, and symbols.
-2. **Enable TLS:** Use port 8089 with TLS enabled instead of plain HTTP on 8088.
-3. **Firewall restrictions:** Only allow connections from your application server's IP, not `0.0.0.0`.
-4. **Read-only access:** If your application only needs to download recordings, set `read_only = yes` in `ari.conf`.
+1. **Use strong passwords:** MySQL password should be at least 12 characters with mixed case, numbers, and symbols.
+2. **Restrict MySQL access:** Use specific IP instead of `'aiapp'@'%'`:
+   ```sql
+   CREATE USER 'aiapp'@'YOUR_APP_SERVER_IP' IDENTIFIED BY 'password';
+   GRANT SELECT ON asteriskcdrdb.* TO 'aiapp'@'YOUR_APP_SERVER_IP';
+   ```
+3. **Use SSH keys:** Instead of password authentication, use SSH key pairs for better security.
+4. **Create dedicated SSH user:** Don't use root; create `callanalyzer` user with minimal privileges.
+5. **Firewall restrictions:** Only allow connections from your application server's IP.
 
 ## Version Compatibility
 
 This configuration has been tested with:
 - FreePBX 16.0.41.1
 - Asterisk 16.25.0
+- MariaDB 5.5 / MySQL 5.7+
 - PBX Distro 12.7.8-2204-1.sng7
 
-For other versions, configuration syntax may vary slightly. Consult Asterisk ARI documentation for your specific version.
+For other versions, configuration syntax may vary slightly.
 
 ## Support
 
 If you encounter issues not covered in this guide:
-1. Check Asterisk logs: `tail -f /var/log/asterisk/full`
-2. Check application backend logs for detailed error messages
-3. Verify all steps were completed in order
-4. Test ARI connection manually using curl before troubleshooting the application
+1. Check MySQL logs: `tail -f /var/log/mariadb/mariadb.log`
+2. Check SSH logs: `tail -f /var/log/secure`
+3. Check application backend logs for detailed error messages
+4. Test MySQL and SSH connections manually before troubleshooting the application
 
 ---
 
-**Last Updated:** November 23, 2025
-**Configuration Version:** 1.0
-
+**Last Updated:** January 3, 2026
+**Configuration Version:** 2.0 (SSH + MySQL only, no ARI)

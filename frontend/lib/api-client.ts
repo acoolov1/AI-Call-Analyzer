@@ -1,8 +1,10 @@
 import axios, { AxiosError } from 'axios';
 import { getSession } from 'next-auth/react';
 
+// In the browser, use same-origin so requests go to this app and get proxied to the backend via next.config rewrites.
+// This ensures PATCH/GET etc. hit the backend even when the app is accessed from another machine.
 const apiClient = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000',
+  baseURL: typeof window !== 'undefined' ? '' : process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000',
   headers: {
     'Content-Type': 'application/json',
   },

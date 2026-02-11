@@ -1,6 +1,7 @@
 import express from 'express';
 import apiRoutes from './api.routes.js';
 import webhookRoutes from './webhooks.routes.js';
+import adminRoutes from './admin.routes.js';
 import { TwilioController } from '../controllers/twilio.controller.js';
 import { verifyTwilioSignature } from '../middleware/twilio-verify.middleware.js';
 import { webhookRateLimiter } from '../middleware/rate-limit.middleware.js';
@@ -11,6 +12,9 @@ const router = express.Router();
 // Webhooks use Twilio signature verification, NOT authentication tokens
 // Webhook routes (full path) - mount FIRST to avoid authentication middleware
 router.use('/api/v1/webhooks', webhookRoutes);
+
+// Admin routes (require authentication + admin role)
+router.use('/api/v1/admin', adminRoutes);
 
 // API v1 routes (require authentication)
 router.use('/api/v1', apiRoutes);

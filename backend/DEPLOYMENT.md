@@ -51,7 +51,8 @@
 
 1. Start the application:
    ```bash
-   pm2 start ecosystem.config.js --env production
+   # IMPORTANT: production PM2 runs under the `deployer` user
+   sudo -u deployer -H pm2 start ecosystem.config.js --env production
    ```
 
 2. Save PM2 configuration:
@@ -66,7 +67,8 @@
 
 4. View logs:
    ```bash
-   pm2 logs ai-call-analysis-api
+   pm2 logs ai-call-backend
+   pm2 logs ai-call-frontend
    ```
 
 5. Monitor:
@@ -143,14 +145,56 @@ FRONTEND_URL=https://yourdomain.com
 ## Updates
 
 1. Pull latest code: `git pull`
-2. Install dependencies: `npm install`
-3. Run migrations if needed
-4. Restart: `pm2 restart ai-call-analysis-api`
+2. Reinstall deps (only when dependencies changed):
+   - If `package.json` / `package-lock.json` changed in a folder, run `npm ci` for that folder.
+   - If only code changed, you can skip `npm ci` to avoid slow/noisy deploys.
+
+   Full path (deps changed):
+   ```bash
+   cd /home/deployer/AI-Call-Analyzer/backend
+   sudo -u deployer -H npm ci
+   cd /home/deployer/AI-Call-Analyzer/frontend
+   sudo -u deployer -H npm ci
+   ```
+
+3. Rebuild frontend (required for UI/CSS changes):
+   Fast path (no deps changed):
+   ```bash
+   sudo -u deployer -H npm --prefix /home/deployer/AI-Call-Analyzer/frontend run build
+   ```
+
+   Full path (if you prefer `cd`):
+   ```bash
+   cd /home/deployer/AI-Call-Analyzer/frontend
+   sudo -u deployer -H npm run build
+   ```
+4. Run migrations if needed
+5. Restart PM2 processes (**production runs under the `deployer` user**). Keep restarts as short commands:
+   ```bash
+   sudo -u deployer -H pm2 restart ai-call-backend
+   sudo -u deployer -H pm2 restart ai-call-frontend
+   ```
+6. Sanity check (prevents restarting the wrong PM2 daemon):
+   ```bash
+   # Must show ai-call-backend + ai-call-frontend
+   sudo -u deployer -H pm2 status
+
+   # Root PM2 should be empty (or not running). If it shows apps, you restarted the wrong PM2.
+   sudo pm2 status
+   ```
+7. Verify the new frontend build is being served (example: Extensions page chunk):
+   ```bash
+   curl -sS http://localhost:3001/settings/freepbx/extensions | grep -o "page-[a-f0-9]\\{16\\}\\.js" | head -n 1
+   ```
+8. If the UI looks unchanged after deploy: hard refresh (or Incognito) to bypass cached assets.
+
+> Note: PM2 is per-user. If `sudo pm2 status` (root) is empty but `sudo -u deployer -H pm2 status` shows apps,
+> you must restart using the `deployer` command or you’ll restart the wrong daemon.
 
 ## Troubleshooting
 
-- Check logs: `pm2 logs ai-call-analysis-api`
+- Check logs: `sudo -u deployer -H pm2 logs ai-call-backend` / `sudo -u deployer -H pm2 logs ai-call-frontend`
 - Check database connection: `node -e "require('./src/config/database.js').getPool().query('SELECT 1')"`
 - Check Redis: `redis-cli ping`
-- Restart services: `pm2 restart all`
+- Restart services: `sudo -u deployer -H pm2 restart all`
 

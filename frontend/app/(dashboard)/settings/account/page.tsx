@@ -1,13 +1,45 @@
 'use client'
 
-import { useUser } from '@/hooks/use-user'
+import { useEffect, useMemo, useState } from 'react'
 import { useSession } from 'next-auth/react'
 import { redirect } from 'next/navigation'
+import { useQueryClient } from '@tanstack/react-query'
 import DashboardLayout from '@/components/DashboardLayout'
+import { useSelectedUser } from '@/hooks/use-selected-user'
+import apiClient from '@/lib/api-client'
+import { buildApiUrl } from '@/lib/api-helpers'
+import { useAdminUser } from '@/contexts/AdminUserContext'
 
 export default function AccountSettingsPage() {
   const { data: session, status } = useSession()
-  const { data: user, isLoading, error } = useUser()
+  const { selectedUserId } = useAdminUser()
+  const { data: user, isLoading, error } = useSelectedUser()
+  const queryClient = useQueryClient()
+
+  const [isSaving, setIsSaving] = useState(false)
+  const [message, setMessage] = useState<string>('')
+  const [messageType, setMessageType] = useState<'success' | 'error' | 'info'>('info')
+
+  const initialProfile = useMemo(
+    () => ({
+      fullName: user?.fullName || '',
+      companyName: user?.companyName || '',
+      phone: user?.phone || '',
+      addressLine1: user?.addressLine1 || '',
+      addressLine2: user?.addressLine2 || '',
+      city: user?.city || '',
+      state: user?.state || '',
+      postalCode: user?.postalCode || '',
+      country: user?.country || '',
+    }),
+    [user]
+  )
+
+  const [profile, setProfile] = useState(initialProfile)
+
+  useEffect(() => {
+    setProfile(initialProfile)
+  }, [initialProfile])
 
   if (status === 'loading' || isLoading) {
     return (
@@ -46,26 +78,65 @@ export default function AccountSettingsPage() {
     })
   }
 
-  const getSubscriptionBadgeClass = (tier: string) => {
-    switch (tier) {
-      case 'pro':
-        return 'badge-pro'
-      case 'enterprise':
-        return 'badge-enterprise'
-      default:
-        return 'badge-free'
+  const handleProfileChange = (key: keyof typeof profile, value: string) => {
+    setProfile((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const handleSaveProfile = async () => {
+    setIsSaving(true)
+    setMessage('')
+
+    const requiredFields: Array<[string, string]> = [
+      ['Full name', profile.fullName],
+      ['Company name', profile.companyName],
+      ['Phone', profile.phone],
+      ['Address line 1', profile.addressLine1],
+      ['City', profile.city],
+      ['State', profile.state],
+      ['ZIP / Postal', profile.postalCode],
+      ['Country', profile.country],
+    ]
+    for (const [label, value] of requiredFields) {
+      if (!value || value.trim().length === 0) {
+        setMessage(`${label} is required`)
+        setMessageType('error')
+        setIsSaving(false)
+        return
+      }
+    }
+
+    try {
+      const url = buildApiUrl('/api/v1/user/profile', selectedUserId)
+      await apiClient.patch(url, {
+        fullName: profile.fullName,
+        companyName: profile.companyName,
+        phone: profile.phone,
+        addressLine1: profile.addressLine1,
+        addressLine2: profile.addressLine2,
+        city: profile.city,
+        state: profile.state,
+        postalCode: profile.postalCode,
+        country: profile.country,
+      })
+
+      await queryClient.invalidateQueries({ queryKey: ['user'] })
+      await queryClient.invalidateQueries({ queryKey: ['user', selectedUserId || 'current'] })
+
+      setMessage('Profile saved successfully')
+      setMessageType('success')
+    } catch (err: any) {
+      setMessage(err?.response?.data?.message || 'Failed to save profile')
+      setMessageType('error')
+    } finally {
+      setIsSaving(false)
     }
   }
 
-  const getSubscriptionLabel = (tier: string) => {
-    switch (tier) {
-      case 'pro':
-        return 'Pro'
-      case 'enterprise':
-        return 'Enterprise'
-      default:
-        return 'Free'
-    }
+  const formatDateShort = (iso: string | null | undefined) => {
+    if (!iso) return 'N/A'
+    const date = new Date(iso)
+    if (Number.isNaN(date.getTime())) return 'N/A'
+    return date.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
   }
 
   return (
@@ -86,16 +157,6 @@ export default function AccountSettingsPage() {
               </div>
 
               <div className="setting-item">
-                <div className="setting-label">Subscription Tier</div>
-                <div className="setting-value">
-                  <span className={`subscription-badge ${getSubscriptionBadgeClass(user?.subscriptionTier || 'free')}`}>
-                    {getSubscriptionLabel(user?.subscriptionTier || 'free')}
-                  </span>
-                </div>
-                <div className="setting-hint">Your current subscription plan</div>
-              </div>
-
-              <div className="setting-item">
                 <div className="setting-label">Account Created</div>
                 <div className="setting-value">
                   {user?.createdAt ? formatDate(user.createdAt) : 'N/A'}
@@ -110,6 +171,111 @@ export default function AccountSettingsPage() {
                 </div>
                 <div className="setting-hint">Your unique user identifier (for debugging)</div>
               </details>
+            </div>
+          </div>
+
+          <div className="settings-section">
+            <div className="section-header">
+              <div>
+                <h2 className="section-title">Account Profile</h2>
+                <p className="section-subtitle">Company and contact information</p>
+              </div>
+              <button
+                type="button"
+                className="primary-btn"
+                onClick={handleSaveProfile}
+                disabled={isSaving}
+              >
+                {isSaving ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+
+            {message && <div className={`settings-message ${messageType}`}>{message}</div>}
+
+            <div className="settings-grid">
+              <div>
+                <div className="field-label">Full name</div>
+                <input
+                  className="text-input"
+                  value={profile.fullName}
+                  onChange={(e) => handleProfileChange('fullName', e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="field-label">Company name</div>
+                <input
+                  className="text-input"
+                  value={profile.companyName}
+                  onChange={(e) => handleProfileChange('companyName', e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="field-label">Phone</div>
+                <input
+                  className="text-input"
+                  value={profile.phone}
+                  onChange={(e) => handleProfileChange('phone', e.target.value)}
+                />
+              </div>
+              <div className="grid-span-2">
+                <div className="field-label">Address line 1</div>
+                <input
+                  className="text-input"
+                  value={profile.addressLine1}
+                  onChange={(e) => handleProfileChange('addressLine1', e.target.value)}
+                />
+              </div>
+              <div className="grid-span-2">
+                <div className="field-label">Address line 2 (optional)</div>
+                <input
+                  className="text-input"
+                  value={profile.addressLine2}
+                  onChange={(e) => handleProfileChange('addressLine2', e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="field-label">City</div>
+                <input
+                  className="text-input"
+                  value={profile.city}
+                  onChange={(e) => handleProfileChange('city', e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="field-label">State</div>
+                <input
+                  className="text-input"
+                  value={profile.state}
+                  onChange={(e) => handleProfileChange('state', e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="field-label">ZIP / Postal</div>
+                <input
+                  className="text-input"
+                  value={profile.postalCode}
+                  onChange={(e) => handleProfileChange('postalCode', e.target.value)}
+                />
+              </div>
+              <div>
+                <div className="field-label">Country</div>
+                <input
+                  className="text-input"
+                  value={profile.country}
+                  onChange={(e) => handleProfileChange('country', e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="compliance-row">
+              <div className="compliance-item">
+                <div className="field-label">Terms accepted</div>
+                <div className="setting-value">{formatDateShort(user?.tosAcceptedAt)}</div>
+              </div>
+              <div className="compliance-item">
+                <div className="field-label">Privacy accepted</div>
+                <div className="setting-value">{formatDateShort(user?.privacyAcceptedAt)}</div>
+              </div>
             </div>
           </div>
         </div>
@@ -154,6 +320,28 @@ export default function AccountSettingsPage() {
           border: 1px solid #e9e9e7;
           border-radius: 6px;
           padding: 24px;
+        }
+
+        .section-header {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 16px;
+          margin-bottom: 16px;
+        }
+
+        .section-title {
+          font-size: 15px;
+          font-weight: 600;
+          color: #2f2f2f;
+          letter-spacing: -0.1px;
+          margin: 0 0 4px 0;
+        }
+
+        .section-subtitle {
+          color: #787774;
+          font-size: 12px;
+          margin: 0;
         }
 
         .settings-card {
@@ -244,6 +432,94 @@ export default function AccountSettingsPage() {
           line-height: 1.5;
         }
 
+        .settings-message {
+          padding: 10px 12px;
+          border-radius: 6px;
+          font-size: 13px;
+          margin-bottom: 16px;
+          border: 1px solid;
+        }
+        .settings-message.success {
+          background: #d4edda;
+          border-color: #c3e6cb;
+          color: #155724;
+        }
+        .settings-message.error {
+          background: #f8d7da;
+          border-color: #f5c6cb;
+          color: #721c24;
+        }
+        .settings-message.info {
+          background: #d1ecf1;
+          border-color: #bee5eb;
+          color: #0c5460;
+        }
+
+        .settings-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 14px;
+        }
+        .grid-span-2 {
+          grid-column: span 2;
+        }
+
+        .field-label {
+          font-size: 12px;
+          font-weight: 600;
+          color: #37352f;
+          margin-bottom: 6px;
+          text-transform: uppercase;
+          letter-spacing: 0.4px;
+        }
+
+        .text-input {
+          width: 100%;
+          padding: 10px 12px;
+          border: 1px solid #e1e0dd;
+          border-radius: 6px;
+          font-size: 14px;
+          color: #37352f;
+        }
+        .text-input:focus {
+          outline: none;
+          border-color: var(--app-accent);
+          box-shadow: 0 0 0 3px var(--app-accent-ring);
+        }
+
+        .primary-btn {
+          background: var(--app-accent);
+          color: #fff;
+          border: none;
+          border-radius: 6px;
+          padding: 10px 14px;
+          font-size: 13px;
+          cursor: pointer;
+          min-width: 88px;
+          text-align: center;
+          height: 40px;
+        }
+        .primary-btn:hover:not(:disabled) {
+          background: var(--app-accent-hover);
+        }
+        .primary-btn:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
+        .compliance-row {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 14px;
+          margin-top: 18px;
+          padding-top: 18px;
+          border-top: 1px solid #f1f1ef;
+        }
+
+        .compliance-item {
+          padding: 0;
+        }
+
         .subscription-badge {
           display: inline-flex;
           align-items: center;
@@ -261,8 +537,8 @@ export default function AccountSettingsPage() {
         }
 
         .badge-pro {
-          background-color: rgba(46, 170, 220, 0.12);
-          color: #0b6e99;
+          background-color: var(--app-accent-soft-bg);
+          color: var(--app-accent-hover);
         }
 
         .badge-enterprise {
@@ -277,6 +553,11 @@ export default function AccountSettingsPage() {
           
           .settings-section {
             padding: 16px;
+          }
+
+          .settings-grid,
+          .compliance-row {
+            grid-template-columns: 1fr;
           }
 
           .page-title {

@@ -33,7 +33,7 @@ This is a **modern full-stack application** with separated frontend and backend:
 - PostgreSQL database (or Supabase account)
 - Twilio account with phone number
 - OpenAI API key
-- *(Optional)* FreePBX/Asterisk instance with ARI enabled (tested on FreePBX **16.0.41.1** / Asterisk **16.25.0**)
+- *(Optional)* FreePBX/Asterisk instance (tested on FreePBX **16.0.41.1** / Asterisk **16.25.0**)
 
 ### Setup
 
@@ -125,16 +125,20 @@ OPENAI_API_KEY=...
 PORT=3000
 NODE_ENV=development
 
-# FreePBX (optional)
-FREEPBX_ENABLED=false
-FREEPBX_HOST=
-FREEPBX_PORT=8089
-FREEPBX_USERNAME=
-FREEPBX_PASSWORD=
-FREEPBX_TLS=true
-FREEPBX_TLS_REJECT_UNAUTHORIZED=false
-FREEPBX_SYNC_INTERVAL_MINUTES=10
-FREEPBX_DEFAULT_USER_ID=<defaults to DEFAULT_USER_ID>
+# FreePBX MySQL CDR (optional)
+FREEPBX_MYSQL_HOST=
+FREEPBX_MYSQL_PORT=3306
+FREEPBX_MYSQL_USERNAME=
+FREEPBX_MYSQL_PASSWORD=
+FREEPBX_MYSQL_DATABASE=asteriskcdrdb
+
+# FreePBX SSH (for recording download & redaction - optional)
+FREEPBX_SSH_HOST=
+FREEPBX_SSH_PORT=22
+FREEPBX_SSH_USERNAME=
+FREEPBX_SSH_PASSWORD=
+FREEPBX_SSH_PRIVATE_KEY=
+FREEPBX_SSH_BASE_PATH=/var/spool/asterisk/monitor
 ```
 
 ### Frontend (.env.local)
@@ -157,12 +161,16 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 
 - ✅ **Real-time call transcription** via OpenAI Whisper
 - ✅ **AI-powered analysis** (sentiment, topics, action items)
+- ✅ **Sensitive-data redaction (PCI + PII/PHI)** - Detects and redacts/mutes card data and common PII (DOB, SSN, email, address, password/PIN)
+- ✅ **Booking field extraction** - Analysis includes a Booking status shown in Call History
 - ✅ **Secure authentication** with NextAuth.js
 - ✅ **Audio playback** of recorded calls
 - ✅ **Searchable call history**
 - ✅ **Dashboard with analytics**
 - ✅ **Responsive design** (mobile-friendly)
-- ✅ **FreePBX ingestion** alongside Twilio (scheduled + manual sync button)
+- ✅ **FreePBX CDR ingestion** alongside Twilio (scheduled + manual sync button)
+- ✅ **Unanswered FreePBX calls** (NO ANSWER/BUSY/FAILED/etc.) included in Call History (no audio/transcript processing; shown with a red label)
+- ✅ **Persistent call direction** (Inbound/Outbound) for FreePBX CDR calls + server-side Call History filters (Direction/Booking/Sentiment/No Answer)
 
 ---
 
@@ -228,10 +236,19 @@ All API routes (except webhooks) require authentication via NextAuth session.
 - `GET /api/calls/:id` - Get call details
 - `GET /api/stats` - Get analytics stats
 - `POST /webhooks/recording-status` - Twilio webhook
-- `GET /audio/:id` - Stream call recording
-- `GET /api/v1/integrations/freepbx/status` - Current FreePBX sync state + settings
-- `POST /api/v1/integrations/freepbx/test` - Test ARI credentials reachability
-- `POST /api/v1/integrations/freepbx/sync` - Kick off manual FreePBX recording sync
+- `GET /api/v1/audio/:id` - Stream call recording (**supports HTTP Range for reliable seeking/scrubbing**)
+- `GET /api/audio/:id` - Frontend proxy for audio streaming (forwards Range + auth)
+- `GET /api/v1/integrations/freepbx/cdr/status` - Current FreePBX CDR sync state
+- `POST /api/v1/integrations/freepbx/cdr/test` - Test MySQL connection
+- `POST /api/v1/integrations/freepbx/cdr/sync` - Trigger manual FreePBX CDR sync
+- `GET /api/v1/cdr-calls` - List FreePBX CDR calls (supports `startDate`, `endDate`, `direction`, `booking`, `sentiment`, `notAnswered`, plus pagination)
+- `GET /api/v1/cdr-calls/ids` - List matching call IDs for bulk actions (same filters as `/api/v1/cdr-calls`)
+- `POST /api/v1/integrations/freepbx/ssh/test` - Test SSH connection
+- `GET /api/v1/integrations/freepbx/recordings-stats` - Recordings folder stats (file count + size); queried on FreePBX settings page load
+
+### Audio Player (Call History)
+- **Duration display**: shown immediately on row expand using CDR-derived duration (`calls.duration` / `billsec`) — **no extra metadata request**.
+- **Playback + scrubbing**: uses the audio stream endpoints above with **HTTP Range** support so seeking is reliable, even for long recordings.
 
 See `/backend/src/routes/` for full API specification.
 
@@ -241,20 +258,22 @@ See `/backend/src/routes/` for full API specification.
 
 1. **Backend configuration**
    - Set `FREEPBX_*` variables in `backend/.env` *or*
-   - Use the frontend UI (Settings ▸ FreePBX) to store host/port/credentials per user.
-2. **Enable ARI on FreePBX**
-   - Create a dedicated user in `ari.conf` (read-only is sufficient for recordings).
-   - Ensure the ARI port (8088/8089) is accessible from the backend.
-3. **Connect via UI**
-   - Navigate to **Settings ▸ FreePBX Integration**, fill in host, port, username, and password, then click **Save settings**.
-   - Use **Test Connection** to verify credentials are valid.
-4. **Ingest recordings**
-   - Automatic background sync runs every `FREEPBX_SYNC_INTERVAL_MINUTES`.
-   - On the **Interactions** page click **Sync FreePBX** to trigger a manual fetch.
-   - FreePBX calls show the `FreePBX` badge in the caller column and can be expanded to listen/transcribe just like Twilio entries.
-5. **Manual verification**
-   - Record a call in FreePBX, press **Sync FreePBX**, and verify the call appears with audio and transcription.
-   - Query `/api/v1/integrations/freepbx/status` to inspect last-run metadata if debugging.
+   - Use the frontend UI (Settings ▸ FreePBX) to store credentials per user.
+2. **Configure MySQL CDR access**
+   - Create a dedicated MySQL user with read access to `asteriskcdrdb`.
+   - Grant access from your application server's IP address.
+3. **Configure SSH access**
+   - Set up SSH credentials for recording download and sensitive-data redaction uploads (PCI + PII/PHI).
+   - See [PCI_REDACTION_GUIDE.md](PCI_REDACTION_GUIDE.md) for complete setup instructions (covers broader sensitive-data redaction).
+4. **Connect via UI**
+   - Navigate to **Settings ▸ FreePBX Integration**, fill in MySQL and SSH credentials, then click **Save settings**.
+   - Use **Test MySQL** and **Test SSH** to verify credentials are valid.
+5. **Ingest recordings**
+   - Automatic background sync runs every 10 minutes (configurable).
+   - On the **Call History** page click **Refresh** to trigger a manual fetch.
+   - FreePBX calls appear with proper caller ID, transcription, and analysis.
+6. **Manual verification**
+   - Record a call in FreePBX, press **Refresh**, and verify the call appears with audio and transcription.
 
 ---
 
@@ -270,6 +289,40 @@ See `/backend/src/routes/` for full API specification.
 - Deploy to Vercel (recommended for Next.js)
 - Set environment variables in Vercel dashboard
 - Update `NEXTAUTH_URL` to production domain
+
+### VPS (PM2) Rebuild / Restart (Production)
+If you're running both backend + frontend on a VPS with PM2 (see `ecosystem.config.js`), code changes are not live until you **rebuild the frontend** and **restart the PM2 process**.
+
+```bash
+# Reinstall deps (use lockfiles)
+cd /home/deployer/AI-Call-Analyzer/backend
+sudo -u deployer -H npm ci
+cd /home/deployer/AI-Call-Analyzer/frontend
+sudo -u deployer -H npm ci
+
+# Rebuild frontend (required for UI/CSS changes)
+cd /home/deployer/AI-Call-Analyzer/frontend
+sudo -u deployer -H npm run build
+
+# Restart PM2 processes (PM2 runs under the deployer user)
+sudo -u deployer -H pm2 restart ai-call-backend
+sudo -u deployer -H pm2 restart ai-call-frontend
+```
+
+If the UI still looks unchanged after deploy, do a hard refresh (or use Incognito) to bypass cached assets.
+
+**Sanity check (prevents restarting the wrong PM2 daemon):**
+
+```bash
+sudo -u deployer -H pm2 status
+sudo pm2 status  # should be empty (or not running)
+```
+
+**Verify the new frontend build is being served (example: Extensions page chunk):**
+
+```bash
+curl -sS http://localhost:3001/settings/freepbx/extensions | grep -o "page-[a-f0-9]\\{16\\}\\.js" | head -n 1
+```
 
 ---
 

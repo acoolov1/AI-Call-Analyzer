@@ -13,24 +13,28 @@
 }
 
 .sidebarHeader {
-  padding: 18px 22px;
-  min-height: 64px;
+  padding: 16px 20px;
+  min-height: 72px;
   display: flex;
   align-items: center;
   gap: 14px;
 }
 
 .sidebarLogo {
-  width: 36px;
-  height: 36px;
-  background: #1f1f1f;
-  border-radius: 10px;
+  height: 44px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  color: #fdfdfc;
-  font-size: 18px;
+  justify-content: flex-start;
   flex-shrink: 0;
+}
+
+.sidebarLogoImg {
+  height: 44px;
+  width: auto;
+  max-width: 220px;
+  display: block;
+  object-fit: contain;
+  object-position: left center;
 }
 
 .sidebarTitle {
@@ -96,6 +100,11 @@
   background: linear-gradient(180deg, #fdfdfc 0%, #f7f5f0 100%);
 }
 
+.userSelectorWrapper {
+  position: relative;
+  margin-bottom: 12px;
+}
+
 .userInfo {
   display: flex;
   align-items: center;
@@ -104,14 +113,28 @@
   border-radius: 14px;
   background: #f5f4f1;
   border: 1px solid #efede7;
-  margin-bottom: 12px;
+  transition: all 0.2s ease;
+}
+
+.userInfoClickable {
+  cursor: pointer;
+}
+
+.userInfoClickable:hover {
+  background: #eceae4;
+  border-color: #e0ddd4;
+}
+
+.userInfoAdmin {
+  background: #fef3c7;
+  border-color: #fde68a;
 }
 
 .userAvatar {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
-  background: #37352f;
+  border-radius: 999px;
+  background: var(--app-accent);
   color: #fdfdfc;
   display: flex;
   align-items: center;
@@ -119,6 +142,22 @@
   font-size: 13px;
   font-weight: 600;
   flex-shrink: 0;
+  position: relative;
+}
+
+.adminBadge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: #fbbf24;
+  border-radius: 50%;
+  padding: 2px;
+}
+
+.userChevron {
+  color: #787774;
+  transition: transform 0.2s ease;
+  margin-left: auto;
 }
 
 .userDetails {
@@ -173,6 +212,113 @@
   background: #e8e6df;
 }
 
+/* User Dropdown Styles */
+.userDropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-bottom: 8px;
+  background: #ffffff;
+  border: 1px solid #e8e6df;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  max-height: 400px;
+  display: flex;
+  flex-direction: column;
+  z-index: 1001;
+}
+
+.userDropdownSearch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eceae4;
+}
+
+.userDropdownSearch input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 13px;
+  background: transparent;
+}
+
+.userDropdownList {
+  overflow-y: auto;
+  max-height: 300px;
+}
+
+.userDropdownItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease;
+  font-size: 13px;
+}
+
+.userDropdownItem:hover {
+  background: #f7f6f4;
+}
+
+.userDropdownItem.selected {
+  background: #f5f4f1;
+  border-left: 3px solid var(--app-accent);
+}
+
+.userDropdownAvatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--app-accent);
+  color: #fdfdfc;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.userDropdownDetails {
+  flex: 1;
+  min-width: 0;
+}
+
+.userDropdownEmail {
+  font-size: 13px;
+  font-weight: 500;
+  color: #1f1f1f;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.userDropdownPlan {
+  font-size: 11px;
+  color: #6b6a66;
+}
+
+.userDropdownDivider {
+  height: 1px;
+  background: #eceae4;
+  margin: 4px 0;
+}
+
+.userDropdownEmpty {
+  padding: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: #6b6a66;
+}
+
 /* Submenu Styles */
 .navItemWithSubmenu {
   display: flex;
@@ -217,7 +363,8 @@
 }
 
 .submenuExpanded {
-  max-height: 300px;
+  /* Allow submenu to grow; the sidebar nav already scrolls (overflow-y: auto). */
+  max-height: 1000px;
   opacity: 1;
   margin-top: 4px;
 }
@@ -264,7 +411,7 @@
 }
 
 .submenuItem.active::before {
-  background: #2eaadc;
+  background: var(--app-accent);
 }
 
 @media (max-width: 768px) {

@@ -1,6 +1,5 @@
 'use client'
 
-import { useUser } from '@/hooks/use-user'
 import { useSession } from 'next-auth/react'
 import { redirect } from 'next/navigation'
 import DashboardLayout from '@/components/DashboardLayout'
@@ -8,10 +7,14 @@ import { getCommonTimezones, detectUserTimezone } from '@/lib/timezone'
 import { useState, useEffect } from 'react'
 import apiClient from '@/lib/api-client'
 import { useQueryClient } from '@tanstack/react-query'
+import { useAdminUser } from '@/contexts/AdminUserContext'
+import { buildApiUrl } from '@/lib/api-helpers'
+import { useSelectedUser } from '@/hooks/use-selected-user'
 
 export default function PreferencesPage() {
   const { data: session, status } = useSession()
-  const { data: user, isLoading, error, mutate } = useUser()
+  const { selectedUserId } = useAdminUser()
+  const { data: user, isLoading, error } = useSelectedUser()
   const queryClient = useQueryClient()
   const [selectedTimezone, setSelectedTimezone] = useState<string>('UTC')
   const [isSavingTimezone, setIsSavingTimezone] = useState(false)
@@ -63,7 +66,8 @@ export default function PreferencesPage() {
 
     try {
       console.log('Saving timezone:', newTimezone)
-      const response = await apiClient.patch('/api/v1/user/preferences', {
+      const url = buildApiUrl('/api/v1/user/preferences', selectedUserId)
+      const response = await apiClient.patch(url, {
         timezone: newTimezone,
       })
 
@@ -73,7 +77,6 @@ export default function PreferencesPage() {
         setTimezoneMessage('Timezone saved successfully! Refreshing...')
         
         queryClient.invalidateQueries({ queryKey: ['user'] })
-        mutate()
         
         setTimeout(() => {
           setTimezoneMessage('Timezone updated! Please refresh other pages to see changes.')
@@ -268,8 +271,8 @@ export default function PreferencesPage() {
 
         .timezone-select:focus {
           outline: none;
-          border-color: #2eaadc;
-          box-shadow: 0 0 0 3px rgba(46, 170, 220, 0.1);
+          border-color: var(--app-accent);
+          box-shadow: 0 0 0 3px var(--app-accent-ring);
         }
 
         .timezone-select:disabled {
@@ -303,7 +306,7 @@ export default function PreferencesPage() {
         }
 
         .timezone-message.success {
-          color: #0b6e99;
+          color: var(--app-accent-hover);
         }
 
         .timezone-message.error {

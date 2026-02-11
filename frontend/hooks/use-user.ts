@@ -7,15 +7,36 @@ export type { TwilioSettings } from '@/types/call';
 export interface User {
   id: string;
   email: string;
+  role: 'super_admin' | 'admin' | 'user';
+  isAdmin: boolean;
+  canUseApp: boolean;
+  canUseFreepbxManager: boolean;
   createdAt: string;
   updatedAt: string;
   subscriptionTier: 'free' | 'pro' | 'enterprise';
   stripeCustomerId?: string;
   stripeSubscriptionId?: string;
   timezone?: string;
+  fullName?: string;
+  companyName?: string;
+  phone?: string;
+  addressLine1?: string;
+  addressLine2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+  tosAcceptedAt?: string | null;
+  privacyAcceptedAt?: string | null;
+  tosVersion?: string;
+  privacyVersion?: string;
   twilioSettings?: TwilioSettings;
   freepbxSettings?: FreePbxSettings;
   openaiSettings?: OpenAISettings;
+  billingSettings?: {
+    basePlanMonthlyChargeUsd?: number | null;
+    basePlanIncludedAudioHours?: number | null;
+  };
 }
 
 // Fetch current user information

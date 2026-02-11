@@ -2,6 +2,8 @@
 ║                                                      ║
 ║      AI CALL ANALYSIS - QUICK START GUIDE          ║
 ║                                                      ║
+║      ⚠️  PRODUCTION SERVER - app.komilio.com  ⚠️      ║
+║                                                      ║
 ╚══════════════════════════════════════════════════════╝
 
 👉 AFTER COMPUTER RESTART - USE THIS:
@@ -30,12 +32,17 @@
    📄 STARTUP_GUIDE.md - Detailed instructions
    📄 STARTUP_FILES_REFERENCE.md - All startup files explained
    📄 README.md - Full documentation
+   📄 PCI_REDACTION_GUIDE.md - PCI compliance & redaction setup
+   📄 FREEPBX_CONFIGURATION_GUIDE.md - FreePBX/ARI setup
 
 
 🌐 ACCESS YOUR APP:
 
-   Frontend: http://localhost:3001
-   Backend:  http://localhost:3000/health
+   PRODUCTION: https://app.komilio.com (frontend)
+   PRODUCTION: https://api.komilio.com (backend API)
+   
+   LOCAL (on server): http://localhost:3001 (frontend)
+   LOCAL (on server): http://localhost:3000/health (backend)
 
 
 ═══════════════════════════════════════════════════════

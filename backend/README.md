@@ -43,6 +43,7 @@ src/
 - `GET /api/v1/calls` - List calls
 - `GET /api/v1/calls/:id` - Get call details
 - `GET /api/v1/stats` - Dashboard statistics
+- `GET /api/v1/audio/:id` - Stream call recording (**supports HTTP Range for seeking/scrubbing**)
 - `POST /api/v1/calls/:id/retry` - Retry failed analysis
 - `DELETE /api/v1/calls/:id` - Delete call
 

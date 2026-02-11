@@ -1,6 +1,7 @@
 import axios from 'axios';
 import https from 'https';
 import { config } from '../config/env.js';
+import { FreePbxSshService } from './freepbx-ssh.service.js';
 import { logger } from '../utils/logger.js';
 import { CALL_SOURCE } from '../utils/constants.js';
 
@@ -160,25 +161,12 @@ export class FreePbxService {
   }
 
   static async downloadRecording(recordingName, settings) {
-    this.ensureEnabled(settings);
     if (!recordingName) {
       throw new Error('Recording name is required for FreePBX download');
     }
 
-    // ARI expects the stored recording ID exactly as reported (usually monitor/...)
-    // so keep the original path, just trim leading slashes if present.
-    const recordingId = recordingName.replace(/^\/+/, '');
-
-    try {
-      const client = createHttpClient(settings);
-      const response = await client.get(`/recordings/stored/${encodeURIComponent(recordingId)}/file`, {
-        responseType: 'arraybuffer',
-      });
-      return Buffer.from(response.data);
-    } catch (error) {
-      logger.error({ error: error.message, recordingName }, 'Failed to download FreePBX recording');
-      throw new Error(`Unable to download FreePBX recording ${recordingId}`);
-    }
+    // Download via SSH/SFTP only
+    return await FreePbxSshService.downloadRecording(recordingName, settings);
   }
 }
 

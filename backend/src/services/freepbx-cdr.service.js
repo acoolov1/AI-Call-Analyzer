@@ -1,7 +1,7 @@
 import mysql from 'mysql2/promise';
 import { logger } from '../utils/logger.js';
-import { CALL_SOURCE } from '../utils/constants.js';
 import { FreePbxService } from './freepbx.service.js';
+import { FreePbxSshService } from './freepbx-ssh.service.js';
 
 export class FreePbxCdrService {
   // Timezone offset mapping (hours from UTC)
@@ -21,7 +21,7 @@ export class FreePbxCdrService {
 
   static isEnabled(settings) {
     return Boolean(
-      settings?.enabled &&
+      settings?.enabled !== false &&  // Check if explicitly disabled
       settings?.mysql_host &&
       settings?.mysql_username &&
       settings?.mysql_password
@@ -111,7 +111,9 @@ export class FreePbxCdrService {
           peeraccount,
           sequence
         FROM cdr
-        WHERE disposition = 'ANSWERED'
+        WHERE dstchannel IS NOT NULL
+          AND dstchannel != ''
+          AND lastapp = 'Dial'
       `;
 
       const params = [];
@@ -148,8 +150,13 @@ export class FreePbxCdrService {
       if (rows.length > 0) {
         console.log(`📅 Sample CDR calldate from MySQL: "${rows[0].calldate}"`);
       }
-      
-      return rows.map(row => this.normalizeCdrRow(row));
+
+      // FreePBX can emit multiple "Dial" legs for the same uniqueid (ring groups, multiple attempts).
+      // When that happens, prefer the "best" leg so we don't ingest a NO ANSWER leg when an
+      // ANSWERED leg exists for the same call.
+      const bestRows = this.selectBestLegPerUniqueId(rows);
+
+      return bestRows.map(row => this.normalizeCdrRow(row));
     } catch (error) {
       logger.error({ error: error.message }, 'Failed to query CDR records');
       throw new Error(`Failed to query CDR records: ${error.message}`);
@@ -158,6 +165,47 @@ export class FreePbxCdrService {
         await connection.end();
       }
     }
+  }
+
+  static selectBestLegPerUniqueId(rows) {
+    const byId = new Map();
+
+    const score = (row) => {
+      const disposition = String(row?.disposition || '').toUpperCase().trim();
+      const answered = disposition === 'ANSWERED';
+      const hasRecording = Boolean(String(row?.recordingfile || '').trim());
+      const billsec = Number(row?.billsec || 0);
+      // Weighted preference: answered + recordingfile > answered > recordingfile > longer billsec.
+      return (answered ? 1000 : 0) + (hasRecording ? 100 : 0) + Math.min(Math.max(billsec, 0), 60);
+    };
+
+    const compare = (a, b) => {
+      const sa = score(a);
+      const sb = score(b);
+      if (sa !== sb) return sa - sb;
+      const seqA = Number(a?.sequence || 0);
+      const seqB = Number(b?.sequence || 0);
+      if (seqA !== seqB) return seqA - seqB;
+      const ta = a?.calldate ? new Date(a.calldate).getTime() : 0;
+      const tb = b?.calldate ? new Date(b.calldate).getTime() : 0;
+      return ta - tb;
+    };
+
+    for (const row of rows) {
+      const key = row?.uniqueid;
+      if (!key) continue;
+      const existing = byId.get(key);
+      if (!existing) {
+        byId.set(key, row);
+        continue;
+      }
+      // Keep whichever compares higher
+      if (compare(existing, row) < 0) {
+        byId.set(key, row);
+      }
+    }
+
+    return Array.from(byId.values());
   }
 
   static normalizeCdrRow(row) {
@@ -181,28 +229,9 @@ export class FreePbxCdrService {
   }
 
   static async downloadRecording(recordingPath, freepbxSettings) {
-    // CDR stores: external-200-+17173815064-20251123-203354-1763948034.15.wav
-    // ARI expects: 2025/11/23/external-200-+17173815064-20251123-203354-1763948034.15
-    
-    // Remove extension
-    let cleanPath = recordingPath.replace(/\.(wav|gsm|mp3)$/i, '');
-    
-    // Extract date from filename (format: ...YYYYMMDD-HHMMSS-...)
-    const dateMatch = cleanPath.match(/-(\d{8})-\d{6}-/);
-    if (dateMatch) {
-      const dateStr = dateMatch[1]; // e.g., "20251123"
-      const year = dateStr.substring(0, 4);
-      const month = dateStr.substring(4, 6);
-      const day = dateStr.substring(6, 8);
-      
-      // Construct full path WITHOUT monitor prefix: YYYY/MM/DD/filename
-      // ARI list shows recordings as: "2025/11/23/external-200-..."
-      const ariPath = `${year}/${month}/${day}/${cleanPath}`;
-      return await FreePbxService.downloadRecording(ariPath, freepbxSettings);
-    }
-    
-    // Fallback if date extraction fails - try as-is
-    return await FreePbxService.downloadRecording(cleanPath, freepbxSettings);
+    // Download via SSH/SFTP only
+    const remotePath = FreePbxSshService.resolveRemotePath(recordingPath, freepbxSettings);
+    return await FreePbxSshService.downloadRecording(remotePath, freepbxSettings);
   }
 
   static async getCdrCalls({ page = 1, limit = 50, userId, freepbxSettings }) {
@@ -216,7 +245,11 @@ export class FreePbxCdrService {
       
       // Get total count
       const [countResult] = await connection.execute(
-        'SELECT COUNT(*) as total FROM cdr WHERE disposition = "ANSWERED"'
+        `SELECT COUNT(*) as total
+         FROM cdr
+         WHERE dstchannel IS NOT NULL
+           AND dstchannel != ''
+           AND lastapp = 'Dial'`
       );
       const total = countResult[0]?.total || 0;
 
@@ -224,7 +257,9 @@ export class FreePbxCdrService {
       const offset = (page - 1) * limit;
       const [rows] = await connection.execute(
         `SELECT * FROM cdr 
-         WHERE disposition = 'ANSWERED' 
+         WHERE dstchannel IS NOT NULL
+           AND dstchannel != ''
+           AND lastapp = 'Dial'
          ORDER BY calldate DESC 
          LIMIT ? OFFSET ?`,
         [limit, offset]

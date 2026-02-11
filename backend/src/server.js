@@ -10,8 +10,16 @@ import { metricsMiddleware, getMetrics } from './middleware/metrics.middleware.j
 import routes from './routes/index.js';
 import { initializeWorkers, closeQueues } from './jobs/queue.js';
 import { scheduleFreePbxSync } from './jobs/freepbx-sync.job.js';
+import { scheduleFreePbxCdrSync } from './jobs/freepbx-cdr-sync.job.js';
+import { scheduleFreePbxMetricsSync } from './jobs/freepbx-metrics-sync.job.js';
+import { scheduleFreePbxRetention } from './jobs/freepbx-retention.job.js';
+import { scheduleFreePbxVoicemailJobs } from './jobs/freepbx-voicemail.job.js';
+import { scheduleSystemMetricsHistorySampling, stopSystemMetricsHistorySampling } from './jobs/system-metrics-history.job.js';
 
 const app = express();
+
+// Trust first proxy (e.g. nginx, Next.js) so X-Forwarded-For is accepted and rate limiter does not throw
+app.set('trust proxy', 1);
 
 // Security middleware
 app.use(helmet());
@@ -94,10 +102,16 @@ if (config.redis.url) {
 }
 
 scheduleFreePbxSync();
+scheduleFreePbxCdrSync();
+scheduleFreePbxMetricsSync();
+scheduleFreePbxRetention();
+scheduleFreePbxVoicemailJobs();
+scheduleSystemMetricsHistorySampling();
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received, shutting down gracefully');
+  stopSystemMetricsHistorySampling();
   await closeQueues();
   await closePool();
   process.exit(0);
@@ -105,6 +119,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   logger.info('SIGINT received, shutting down gracefully');
+  stopSystemMetricsHistorySampling();
   await closeQueues();
   await closePool();
   process.exit(0);

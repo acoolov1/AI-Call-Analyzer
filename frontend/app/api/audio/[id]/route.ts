@@ -15,10 +15,12 @@ export async function GET(
 
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'
     const audioUrl = `${apiUrl}/api/v1/audio/${params.id}`
-    
+
+    const range = request.headers.get('range')
     const response = await fetch(audioUrl, {
       headers: {
         'Authorization': `Bearer ${session.accessToken}`,
+        ...(range ? { Range: range } : {}),
       },
     })
 
@@ -29,13 +31,22 @@ export async function GET(
       )
     }
 
-    const audioBuffer = await response.arrayBuffer()
-    
-    return new NextResponse(audioBuffer, {
-      headers: {
-        'Content-Type': 'audio/wav',
-        'Content-Disposition': `inline; filename="recording-${params.id}.wav"`,
-      },
+    const headers = new Headers()
+    const passthrough = [
+      'content-type',
+      'content-length',
+      'content-range',
+      'accept-ranges',
+      'content-disposition',
+    ]
+    passthrough.forEach((key) => {
+      const value = response.headers.get(key)
+      if (value) headers.set(key, value)
+    })
+
+    return new NextResponse(response.body, {
+      status: response.status,
+      headers,
     })
   } catch (error) {
     console.error('Error proxying audio:', error)

@@ -1,18 +1,16 @@
 import { UnauthorizedError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
+import { User } from '../models/User.js';
 
-export function authenticate(req, res, next) {
+export async function authenticate(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      console.log('⚠️  No authorization header found');
       throw new UnauthorizedError('No token provided');
     }
 
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-
-    console.log('🔑 Token received (first 20 chars):', token.substring(0, 20) + '...');
 
     // TODO: Verify JWT token with Supabase
     // For now, we'll extract user ID from token
@@ -34,29 +32,33 @@ export function authenticate(req, res, next) {
         payload = JSON.parse(Buffer.from(token, 'base64').toString());
       }
       
-      console.log('📋 Token payload:', JSON.stringify(payload, null, 2));
-      
       // Extract user ID from token
       // NextAuth stores user.id in token.id
       const userId = payload.id || payload.sub || payload.user_id || payload.userId;
       
       if (!userId) {
-        console.error('❌ No user ID found in token payload');
-        console.error('Available keys:', Object.keys(payload));
         throw new UnauthorizedError('No user ID in token');
       }
       
-      console.log('✅ Authenticated user ID:', userId);
-      req.user = { id: userId };
+      // Fetch role + capability flags from database
+      const authContext = await User.getAuthContext(userId);
+
+      // If the DB row hasn't been created yet (e.g. trigger lag), default to a safe baseline.
+      req.user = authContext || {
+        id: userId,
+        role: 'user',
+        isAdmin: false,
+        canUseApp: true,
+        canUseFreepbxManager: false,
+      };
     } catch (err) {
-      console.error('❌ Token decode error:', err.message);
-      console.error('Token (first 50 chars):', token.substring(0, 50));
+      logger.warn({ error: err.message }, 'Token decode/parse failed');
       throw new UnauthorizedError('Invalid token: ' + err.message);
     }
 
     next();
   } catch (error) {
-    console.error('❌ Authentication error:', error.message);
+    logger.warn({ error: error.message }, 'Authentication error');
     next(error);
   }
 }

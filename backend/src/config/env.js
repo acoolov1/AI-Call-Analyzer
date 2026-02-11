@@ -14,11 +14,12 @@ const optionalEnvVars = {
   NODE_ENV: 'development',
   REDIS_URL: 'redis://localhost:6379',
   FRONTEND_URL: 'http://localhost:3001',
+  FREEPBX_CRED_SECRET: null,
   FREEPBX_ENABLED: 'false',
   FREEPBX_PORT: '8089',
   FREEPBX_TLS: 'true',
   FREEPBX_TLS_REJECT_UNAUTHORIZED: 'false',
-  FREEPBX_SYNC_INTERVAL_MINUTES: '10',
+  FREEPBX_SYNC_INTERVAL_MINUTES: '5',
 };
 
 // Validate required environment variables
@@ -86,6 +87,7 @@ export const config = {
     port: parseInt(process.env.FREEPBX_PORT || '8089', 10),
     username: process.env.FREEPBX_USERNAME,
     password: process.env.FREEPBX_PASSWORD,
+    credSecret: process.env.FREEPBX_CRED_SECRET,
     tls: process.env.FREEPBX_TLS !== 'false',
     rejectUnauthorized: process.env.FREEPBX_TLS_REJECT_UNAUTHORIZED !== 'false',
     syncIntervalMinutes: parseInt(process.env.FREEPBX_SYNC_INTERVAL_MINUTES || '10', 10) || 10,

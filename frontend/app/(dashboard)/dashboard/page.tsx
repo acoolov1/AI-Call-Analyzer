@@ -1,18 +1,22 @@
 'use client'
 
-import { useStats, useCalls } from '@/hooks/use-calls'
+import { useStats, useCdrCalls } from '@/hooks/use-calls'
 import { useUser } from '@/hooks/use-user'
 import { useSession } from 'next-auth/react'
 import { redirect } from 'next/navigation'
 import DashboardLayout from '@/components/DashboardLayout'
 import { formatDateInTimezone } from '@/lib/timezone'
-import Link from 'next/link'
+import { useAdminUser } from '@/contexts/AdminUserContext'
+import { canUseApp } from '@/lib/permissions'
 
 export default function DashboardPage() {
   const { data: session, status } = useSession()
   const { data: user } = useUser()
-  const { data: stats, isLoading } = useStats()
-  const { data: recentCalls } = useCalls({ limit: 5 })
+  const { selectedUserId } = useAdminUser()
+  const appEnabled = user ? canUseApp(user) : false
+  const { data: stats, isLoading } = useStats(selectedUserId, { enabled: appEnabled })
+  const { data: cdrData } = useCdrCalls(1, 5, selectedUserId, { enabled: appEnabled })
+  const recentCalls = cdrData?.calls || []
 
   if (status === 'loading') {
     return <div>Loading...</div>
@@ -20,6 +24,15 @@ export default function DashboardPage() {
 
   if (status === 'unauthenticated') {
     redirect('/login')
+  }
+
+  if (!user) {
+    return <div>Loading...</div>
+  }
+
+  // FreePBX-only admins should land on FreePBX Manager
+  if (!canUseApp(user)) {
+    redirect('/settings/freepbx/user-manager')
   }
 
   if (isLoading) {
@@ -57,7 +70,7 @@ export default function DashboardPage() {
         <h2 className="section-title">Recent Calls</h2>
         {recentCalls && recentCalls.length > 0 ? (
           <div className="call-list">
-            {recentCalls.map((call) => {
+            {recentCalls.map((call: any) => {
               const displayCaller = call.callerName 
                 ? `${call.callerName} (${call.callerNumber})` 
                 : call.callerNumber
@@ -66,7 +79,7 @@ export default function DashboardPage() {
                   <div className="call-item-info">
                     <div className="call-item-number">{displayCaller}</div>
                     <div className="call-item-date">
-                      {formatDateInTimezone(call.createdAt, user?.timezone || 'UTC', {
+                      {formatDateInTimezone(call.externalCreatedAt || call.createdAt, user?.timezone || 'UTC', {
                         month: 'short',
                         day: 'numeric',
                         year: 'numeric',
@@ -75,15 +88,12 @@ export default function DashboardPage() {
                       })}
                     </div>
                   </div>
-                  <Link href={`/calls/${call.id}`} className="call-item-link">
-                    View Details
-                  </Link>
                 </div>
               )
             })}
           </div>
         ) : (
-          <p className="empty-state-text">No calls yet. Make a call to your Twilio number to get started.</p>
+          <p className="empty-state-text">No calls yet. Configure FreePBX CDR integration to see your calls.</p>
         )}
       </div>
       </div>

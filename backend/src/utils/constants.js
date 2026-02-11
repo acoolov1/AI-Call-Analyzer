@@ -11,6 +11,14 @@ export const CALL_SOURCE = {
   FREEPBX_CDR: 'freepbx-cdr',
 };
 
+export const REDACTION_STATUS = {
+  NOT_NEEDED: 'not_needed',
+  PENDING: 'pending',
+  PROCESSING: 'processing',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+};
+
 export const SENTIMENT = {
   POSITIVE: 'positive',
   NEGATIVE: 'negative',

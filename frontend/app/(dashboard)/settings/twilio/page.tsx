@@ -1,16 +1,20 @@
 'use client'
 
-import { useUser, type TwilioSettings } from '@/hooks/use-user'
+import { type TwilioSettings } from '@/hooks/use-user'
 import { useSession } from 'next-auth/react'
 import { redirect } from 'next/navigation'
 import DashboardLayout from '@/components/DashboardLayout'
 import { useState, useEffect } from 'react'
 import apiClient from '@/lib/api-client'
 import { useQueryClient } from '@tanstack/react-query'
+import { useAdminUser } from '@/contexts/AdminUserContext'
+import { buildApiUrl } from '@/lib/api-helpers'
+import { useSelectedUser } from '@/hooks/use-selected-user'
 
 export default function TwilioSettingsPage() {
   const { data: session, status } = useSession()
-  const { data: user, isLoading, error, mutate } = useUser()
+  const { selectedUserId } = useAdminUser()
+  const { data: user, isLoading, error } = useSelectedUser()
   const queryClient = useQueryClient()
   
   const [twilioSettings, setTwilioSettings] = useState({
@@ -79,7 +83,8 @@ export default function TwilioSettingsPage() {
     setTwilioMessage('')
 
     try {
-      const response = await apiClient.patch('/api/v1/user/preferences', {
+      const url = buildApiUrl('/api/v1/user/preferences', selectedUserId)
+      const response = await apiClient.patch(url, {
         twilioSettings: { [key]: value },
       })
 
@@ -91,7 +96,6 @@ export default function TwilioSettingsPage() {
         }
         
         queryClient.invalidateQueries({ queryKey: ['user'] })
-        mutate()
         
         setTimeout(() => setTwilioMessage(''), 3000)
       }
@@ -424,7 +428,7 @@ export default function TwilioSettingsPage() {
         }
 
         .toggle-control input[type="checkbox"]:checked + .toggle-slider {
-          background-color: #2eaadc;
+          background-color: var(--app-accent);
         }
 
         .toggle-control input[type="checkbox"]:checked + .toggle-slider::before {
@@ -460,8 +464,8 @@ export default function TwilioSettingsPage() {
 
         .text-input:focus {
           outline: none;
-          border-color: #2eaadc;
-          box-shadow: 0 0 0 3px rgba(46, 170, 220, 0.1);
+          border-color: var(--app-accent);
+          box-shadow: 0 0 0 3px var(--app-accent-ring);
         }
 
         .text-input:disabled {
@@ -489,8 +493,8 @@ export default function TwilioSettingsPage() {
 
         .select-input:focus {
           outline: none;
-          border-color: #2eaadc;
-          box-shadow: 0 0 0 3px rgba(46, 170, 220, 0.1);
+          border-color: var(--app-accent);
+          box-shadow: 0 0 0 3px var(--app-accent-ring);
         }
 
         .select-input:disabled {
@@ -519,8 +523,8 @@ export default function TwilioSettingsPage() {
 
         .textarea-input:focus {
           outline: none;
-          border-color: #2eaadc;
-          box-shadow: 0 0 0 3px rgba(46, 170, 220, 0.1);
+          border-color: var(--app-accent);
+          box-shadow: 0 0 0 3px var(--app-accent-ring);
         }
 
         .textarea-input:disabled {
@@ -551,7 +555,7 @@ export default function TwilioSettingsPage() {
           width: 18px;
           height: 18px;
           border-radius: 50%;
-          background: #2eaadc;
+          background: var(--app-accent);
           cursor: pointer;
           transition: transform 0.1s ease;
         }
@@ -564,7 +568,7 @@ export default function TwilioSettingsPage() {
           width: 18px;
           height: 18px;
           border-radius: 50%;
-          background: #2eaadc;
+          background: var(--app-accent);
           cursor: pointer;
           border: none;
           transition: transform 0.1s ease;
@@ -597,9 +601,9 @@ export default function TwilioSettingsPage() {
         }
 
         .settings-message.success {
-          background-color: rgba(46, 170, 220, 0.12);
-          color: #0b6e99;
-          border: 1px solid rgba(46, 170, 220, 0.3);
+          background-color: var(--app-accent-soft-bg);
+          color: var(--app-accent-hover);
+          border: 1px solid var(--app-accent-soft-border);
         }
 
         .settings-message.error {
